@@ -1,0 +1,14 @@
+.build/
+dist/
+
+Resources/Signing.local.json
+
+# Local secrets, credentials and machine-generated metadata
+.DS_Store
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.mobileprovision
+*.key
