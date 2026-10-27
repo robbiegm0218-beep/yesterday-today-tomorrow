@@ -425,7 +425,7 @@ final class AssistantModel: ObservableObject {
             case .available:
                 guidance = "钥匙串读取状态异常。请在角色设定中手动重新检查授权；无需重新录入密钥。"
             case .missing:
-                guidance = "请先在角色设定中配置 DeepSeek API Key。"
+                guidance = "请先在助手设置中完成模型连接配置。"
             case .inaccessible:
                 guidance = credentialReadStatus.userMessage
             }
@@ -488,13 +488,13 @@ final class AssistantModel: ObservableObject {
                 UserDefaults.standard.set(relationshipPoints, forKey: "relationshipPoints")
                 if showingMemoryExtraction && MemoryExtractionPolicy.shouldExtract(from: requestText) {
                     do {
-                        let extracted = try await DeepSeekClient().extractMemories(from: Array(messages.suffix(2)).map { DeepSeekChatMessage(role: $0.isUser ? "user" : "assistant", content: $0.text) }, apiKey: apiKey)
+                        let extracted = try await DeepSeekClient().extractMemories(from: [DeepSeekChatMessage(role: "user", content: requestText)], apiKey: apiKey, existing: memories)
                         addMemories(extracted)
                     } catch {
                         memoryStatus = "这次没有更新记忆；你仍可以在记忆页手动管理已有内容。"
                     }
                 } else if showingMemoryExtraction && !MemoryExtractionPolicy.shouldExtract(from: requestText) {
-                    memoryStatus = "已按你的要求跳过本轮自动记忆；这不会删除已有记忆。"
+                    memoryStatus = "本轮已跳过自动记忆（明确不记录或属于临时检查）；已有记忆保留。"
                 }
             } catch is CancellationError {
                 guard activeChatRequestID == requestID else { return }
@@ -502,7 +502,7 @@ final class AssistantModel: ObservableObject {
                 LocalConversationStore.save(messages)
             } catch {
                 guard activeChatRequestID == requestID else { return }
-                messages.append(AssistantMessage(text: "暂时没能联系上 DeepSeek：\(error.localizedDescription)", isUser: false))
+                messages.append(AssistantMessage(text: "暂时没能连接模型服务：\(error.localizedDescription)", isUser: false))
                 LocalConversationStore.save(messages)
             }
         }
@@ -1199,8 +1199,9 @@ final class AssistantModel: ObservableObject {
         let originalCount = updatedMemories.count
         for candidate in extracted.prefix(3) {
             let content = candidate.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty, !updatedMemories.contains(where: { $0.content.localizedCaseInsensitiveCompare(content) == .orderedSame }) else { continue }
-            let category = categories.contains(candidate.category) ? candidate.category : "个人偏好"
+            guard !content.isEmpty, content.count <= 500, categories.contains(candidate.category),
+                  !updatedMemories.contains(where: { MemoryExtractionPolicy.normalized($0.content) == MemoryExtractionPolicy.normalized(content) }) else { continue }
+            let category = candidate.category
             updatedMemories.insert(AssistantMemory(content: content, category: category), at: 0)
         }
         let addedCount = updatedMemories.count - originalCount
@@ -1297,36 +1298,58 @@ final class AssistantModel: ObservableObject {
 struct ContentView: View {
     @EnvironmentObject private var model: AssistantModel
     @AppStorage("interfaceAppearance") private var interfaceAppearance = "system"
+    @AppStorage("assistantName") private var assistantName = "予安"
+    @State private var showingInspector = false
+    @State private var inspectorPage: AssistantInspectorPage = .assistant
 
     var body: some View {
-        VStack(spacing: 0) {
-            if !model.localDataDiagnostics.isEmpty {
-                LocalDataDiagnosticsBanner(diagnostics: $model.localDataDiagnostics)
-            }
-            HStack(spacing: 0) {
-                SidebarView()
-                    .frame(width: 232)
-                Rectangle().fill(AssistantTheme.border.opacity(0.55)).frame(width: 1)
-                Group {
-                    switch model.selectedTab {
-                    case .chat: ChatView()
-                    case .workbench: WorkbenchView()
-                    case .memory: MemoryView()
-                    case .knowledge: KnowledgeBaseView()
-                    case .skills: SkillsView()
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                if !model.localDataDiagnostics.isEmpty {
+                    LocalDataDiagnosticsBanner(diagnostics: $model.localDataDiagnostics)
+                }
+                HStack(spacing: 0) {
+                    VStack(spacing: 0) {
+                        ZStack(alignment: .topTrailing) {
+                            VStack(spacing: 3) {
+                                AvatarView(size: 48)
+                                Text(assistantName).font(.system(size: 12, weight: .medium))
+                                    .padding(.horizontal, 12).padding(.vertical, 4)
+                                    .background(AssistantTheme.surface, in: Capsule())
+                            }.frame(maxWidth: .infinity)
+                            HStack(spacing: 8) {
+                                Button { showingInspector.toggle() } label: {
+                                    Image(systemName: "sidebar.right")
+                                }.help(showingInspector ? "收起侧面板" : "展开侧面板")
+                                    .accessibilityLabel(showingInspector ? "收起侧面板" : "展开侧面板")
+                            }
+                            .font(.system(size: 14))
+                            .buttonStyle(AssistantHeaderButtonStyle())
+                            .padding(.trailing, 18).padding(.top, 4)
+                        }
+                        .padding(.top, 12).padding(.bottom, 8)
+                        ChatView()
+                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if showingInspector {
+                        AssistantInspector(page: $inspectorPage) { showingInspector = false }
+                            .frame(width: max(460, min(540, geometry.size.width * 0.44)))
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                            .overlay(RoundedRectangle(cornerRadius: 16).stroke(AssistantTheme.border.opacity(0.6), lineWidth: 1))
+                            .padding(6)
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(AssistantTheme.canvas)
             }
+            .foregroundStyle(AssistantTheme.text).background(AssistantTheme.canvas)
         }
         .preferredColorScheme(interfaceAppearance == "light" ? .light : interfaceAppearance == "dark" ? .dark : nil)
-        .sheet(isPresented: $model.showingConnectionInfo) {
-            DingTalkPreparationView()
+        .onChange(of: model.selectedTab) { tab in
+            guard let page = AssistantInspectorPage(tab: tab) else { return }
+            inspectorPage = page
+            showingInspector = true
+            model.selectedTab = .chat
         }
-        .sheet(isPresented: $model.showingProfile) {
-            ProfileSetupView()
-        }
+        .sheet(isPresented: $model.showingConnectionInfo) { DingTalkPreparationView() }
+        .sheet(isPresented: $model.showingProfile) { ProfileSetupView() }
     }
 }
 
@@ -1487,55 +1510,6 @@ private struct LocalDataDiagnosticsBanner: View {
     }
 }
 
-struct SidebarView: View {
-    @EnvironmentObject private var model: AssistantModel
-    @AppStorage("assistantName") private var assistantName = "予安"
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 11) {
-                AssistantBrandMark(size: 36)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("昨天今天明天").font(.system(size: 15, weight: .semibold)).lineLimit(1)
-                    Text("记忆 · 规划 · 推进").font(.system(size: 11)).lineLimit(1).foregroundStyle(AssistantTheme.secondaryText)
-                }
-                Spacer()
-            }.padding(.horizontal, 20).padding(.top, 46).padding(.bottom, 28)
-
-            VStack(spacing: 5) {
-                ForEach(AssistantTab.allCases) { tab in
-                    Button { model.selectedTab = tab } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: tab.symbol).font(.system(size: 16, weight: .regular)).frame(width: 22)
-                            Text(tab.rawValue).font(.system(size: 14, weight: model.selectedTab == tab ? .semibold : .regular))
-                            Spacer()
-                        }
-                        .foregroundStyle(AssistantTheme.text)
-                        .padding(.horizontal, 13).frame(height: 44)
-                        .background(model.selectedTab == tab ? AssistantTheme.selection : .clear, in: RoundedRectangle(cornerRadius: 9))
-                        .contentShape(Rectangle())
-                    }.buttonStyle(.plain).padding(.horizontal, 12)
-                }
-            }
-            Spacer(minLength: 24)
-            Button { model.showingProfile = true } label: {
-                HStack(spacing: 11) {
-                    AvatarView(size: 36)
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(assistantName).font(.system(size: 13, weight: .medium)).foregroundStyle(AssistantTheme.text)
-                        Text(model.relationshipStage.rawValue).font(.system(size: 11)).foregroundStyle(AssistantTheme.secondaryText).lineLimit(1)
-                        ProgressView(value: model.relationshipProgress).tint(AssistantTheme.accent).frame(maxWidth: 106)
-                            .accessibilityLabel("相处进度")
-                    }
-                    Image(systemName: "slider.horizontal.3").font(.system(size: 14)).foregroundStyle(AssistantTheme.secondaryText)
-                }
-                .padding(12)
-                .background(AssistantTheme.selection.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
-            }.buttonStyle(.plain).help("助手设定与模型配置").padding(12).padding(.bottom, 6)
-        }.background(AssistantTheme.sidebar)
-    }
-}
-
 private enum AssistantAvatarArtwork {
     // Reuse decoded images across the settings, sidebar and long chat history.
     static let images: [String: NSImage] = Dictionary(uniqueKeysWithValues:
@@ -1581,35 +1555,8 @@ struct ChatView: View {
     @State private var scrollRequest = 0
     @FocusState private var composerFocused: Bool
 
-    private var modelLabel: String {
-        if model.isModelConfigured { return "DeepSeek · 已连接" }
-        if model.credentialReadStatus == .missing { return "尚未配置模型" }
-        if case .inaccessible = model.credentialReadStatus { return "模型配置需要检查" }
-        return "DeepSeek · 云端模型"
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                Text(assistantName).font(.system(size: 18, weight: .semibold))
-                Text(modelLabel).font(.system(size: 11)).foregroundStyle(AssistantTheme.secondaryText)
-                    .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background(AssistantTheme.inset, in: Capsule())
-                Spacer()
-                Menu {
-                    Picker("外观", selection: $interfaceAppearance) {
-                        Text("跟随系统").tag("system")
-                        Text("浅色").tag("light")
-                        Text("深色").tag("dark")
-                    }
-                } label: {
-                    Image(systemName: "circle.lefthalf.filled").font(.system(size: 15)).frame(width: 28, height: 34)
-                }.menuStyle(.borderlessButton).fixedSize().help("切换浅色或深色外观").accessibilityLabel("外观")
-                Button { model.showingProfile = true } label: {
-                    Image(systemName: "slider.horizontal.3").font(.system(size: 15)).frame(width: 34, height: 34)
-                }.buttonStyle(.plain).help("助手设定与模型配置").accessibilityLabel("助手设定")
-            }.padding(.horizontal, 28).padding(.top, 22).padding(.bottom, 18)
-
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 30) {
@@ -1694,8 +1641,6 @@ struct ChatView: View {
                 .background(AssistantTheme.surface, in: RoundedRectangle(cornerRadius: 22))
                 .overlay(RoundedRectangle(cornerRadius: 22).stroke(AssistantTheme.border, lineWidth: 1))
                 .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
-                Text("对话保存在本机 · 对话与相关上下文会发送至 DeepSeek，重要信息请核对")
-                    .font(.system(size: 10)).foregroundStyle(AssistantTheme.secondaryText)
             }.frame(maxWidth: 760).padding(.horizontal, 32).padding(.top, 10).padding(.bottom, 18)
         }.foregroundStyle(AssistantTheme.text).background(AssistantTheme.canvas)
     }
@@ -2423,13 +2368,18 @@ struct MemoryView: View {
             }
             HStack(spacing: 9) {
                 Image(systemName: "lock.fill").font(.system(size: 11))
-                Text("记忆保存在本机；用于回复时会随请求发送给 DeepSeek。自动提取会发送最近一轮对话，你可以关闭自动记忆。")
+                Text("记忆保存在本机，可随时编辑、删除，或关闭自动记忆。")
                     .font(.system(size: 11))
                 Spacer(minLength: 8)
                 Toggle("自动记忆", isOn: $model.showingMemoryExtraction).labelsHidden()
             }.foregroundStyle(Color(red: 0.24, green: 0.50, blue: 0.40)).padding(12).frame(maxWidth: .infinity, alignment: .leading)
                 .background(AssistantTheme.inset, in: RoundedRectangle(cornerRadius: 10))
                 .onChange(of: model.showingMemoryExtraction) { enabled in UserDefaults.standard.set(enabled, forKey: "autoMemoryEnabled") }
+            DisclosureGroup("这些内容是怎么记下来的？") {
+                Text("开启自动记忆后，每轮正常回复结束时，助手会从你本轮的原话提取最多 3 条长期偏好、重要人物或持续项目背景。临时任务、日程、查询和测试情境不应记录；你说“不要记住”会跳过本轮。提取时参考最近 30 条已有记忆避免重复，本机还会拦截文字相同（忽略大小写及多余空白）的条目。不同说法的近义重复仍可能漏过。\n\n记忆自动保存到本机，无需逐条确认。后续回复最多使用最近 30 条记忆；编辑、删除或关闭自动记忆都在这里完成。关闭自动记忆不会清空已有内容。历史误记不会自动删除，也不是你说过的内容的逐字证据。")
+                    .font(.system(size: 12)).foregroundStyle(AssistantTheme.secondaryText)
+                    .lineSpacing(5).fixedSize(horizontal: false, vertical: true).padding(.top, 8)
+            }.font(.system(size: 12))
             Text(model.memoryStatus).font(.system(size: 11)).foregroundStyle(.secondary)
             if model.memories.isEmpty {
                 VStack(spacing: 10) {
@@ -2464,24 +2414,58 @@ struct MemoryView: View {
 struct MemoryRow: View {
     @EnvironmentObject private var model: AssistantModel
     let item: AssistantMemory
-    @State private var draft = ""
+    @State private var draft: String
+    @State private var editing = false
     @State private var isConfirmingDelete = false
 
+    init(item: AssistantMemory) {
+        self.item = item
+        _draft = State(initialValue: item.content)
+    }
+
     var body: some View {
-        HStack(spacing: 10) {
-            TextField("记忆内容", text: $draft, axis: .vertical).font(.system(size: 12)).textFieldStyle(.plain)
-            Button("保存") { model.updateMemory(item, content: draft) }.font(.system(size: 10)).disabled(draft == item.content)
-            Button(role: .destructive) { isConfirmingDelete = true } label: {
-                Image(systemName: "trash").font(.system(size: 11)).foregroundStyle(.secondary)
-            }.buttonStyle(.plain).help("删除记忆")
-        }.padding(.vertical, 10)
-            .onAppear { draft = item.content }
-            .confirmationDialog("删除这条记忆？", isPresented: $isConfirmingDelete, titleVisibility: .visible) {
-                Button("删除记忆", role: .destructive) { model.deleteMemory(item) }
-                Button("取消", role: .cancel) {}
-            } message: {
-                Text("删除后，这条内容不会再用于后续回复。")
+        VStack(alignment: .leading, spacing: 10) {
+            if editing {
+                TextEditor(text: $draft)
+                    .font(.system(size: 14)).foregroundStyle(AssistantTheme.text)
+                    .frame(height: 150)
+                    .padding(8).background(AssistantTheme.inset, in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityLabel("编辑记忆内容")
+            } else {
+                Text(verbatim: item.content)
+                    .font(.system(size: 14)).foregroundStyle(AssistantTheme.text).lineSpacing(5)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
             }
+            HStack(spacing: 12) {
+                Text("记录于 " + item.createdAt.formatted(date: .numeric, time: .omitted))
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                Spacer()
+                if editing {
+                    Button("取消") { draft = item.content; editing = false }
+                    Button("保存") {
+                        model.updateMemory(item, content: draft)
+                        if model.memories.first(where: { $0.id == item.id })?.content == draft.trimmingCharacters(in: .whitespacesAndNewlines) {
+                            editing = false
+                        }
+                    }.disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || draft == item.content)
+                } else {
+                    Button("编辑") { draft = item.content; editing = true }
+                }
+                Button(role: .destructive) { isConfirmingDelete = true } label: {
+                    Image(systemName: "trash")
+                }.buttonStyle(.plain).help("删除记忆").accessibilityLabel("删除记忆")
+            }.font(.system(size: 11)).foregroundStyle(AssistantTheme.secondaryText)
+        }
+        .padding(.vertical, 14)
+        .onChange(of: item.content) { value in if !editing { draft = value } }
+        .confirmationDialog("删除这条记忆？", isPresented: $isConfirmingDelete, titleVisibility: .visible) {
+            Button("删除记忆", role: .destructive) { model.deleteMemory(item) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("删除后，这条内容不会再用于后续回复。")
+        }
     }
 }
 
@@ -2503,7 +2487,7 @@ struct KnowledgeBaseView: View {
                 }
                 HStack(spacing: 9) {
                     Image(systemName: "lock.fill")
-                    Text("索引和文档内容保存在本机。提问时只会把检索到的相关片段发送给 DeepSeek。支持 Markdown、Word 和纯文本。")
+                    Text("索引和文档内容保存在本机，支持 Markdown、Word 和纯文本。")
                     Spacer()
                 }.font(.system(size: 11)).foregroundStyle(Color(red: 0.24, green: 0.50, blue: 0.40))
                     .padding(12).background(AssistantTheme.inset, in: RoundedRectangle(cornerRadius: 10))
@@ -2673,7 +2657,7 @@ private struct SkillEditorView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text(skill.name.isEmpty ? "创建自定义技能" : "编辑技能")
                 .font(.system(size: 19, weight: .semibold, design: .rounded))
-            Text("技能会作为任务指导发送给 DeepSeek。不要在技能说明中写入密码、密钥或其他敏感信息。")
+            Text("技能为助手补充处理任务的规则和方法。")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
             TextField("技能名称", text: $skill.name)
                 .textFieldStyle(.roundedBorder)
@@ -2727,7 +2711,7 @@ struct MeetingMinutesToolView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("会议纪要提取").font(.system(size: 19, weight: .semibold))
-                    Text("粘贴内容，或导入 Markdown、Word、纯文本文件。提取时全文会发送给 DeepSeek；原文不会保存。确认后可加入个人待办，或复制到钉钉。")
+                    Text("粘贴内容，或导入 Markdown、Word、纯文本文件。提取时全文会交给已配置的模型处理；原文不会保存。确认后可加入个人待办，或复制到钉钉。")
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -2864,7 +2848,7 @@ struct MeetingMinutesToolView: View {
             return
         }
         guard let apiKey = DeepSeekCredentialStore.load(), !apiKey.isEmpty else {
-            errorMessage = "请先在角色设定中配置 DeepSeek API Key。"
+            errorMessage = "请先在助手设置中完成模型连接配置。"
             return
         }
         isExtracting = true
@@ -3065,7 +3049,7 @@ struct ProfileSetupView: View {
             Spacer(minLength: 0)
             Text("角色设定和对话记录保存在本机。记忆可在记忆页查看、修改或删除。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
-            Text("使用 DeepSeek API 时，聊天会发送最多 40 条近期对话（含本轮）、最多 30 条记忆、命中的资料片段、最多 40 条未完成个人待办、40 条未完成外部待办和 20 个本地项目。待办包含来源、状态、标题、负责人、截止日期及截止描述；会议纪要待办还会包含核对过的简短原文依据。每日计划会发送候选待办、最多 20 个本地项目进度和 20 条记忆；本期不会读取 Apple 日历。纪要提取会发送你粘贴或导入的全文；记忆提取会发送最近一轮对话。API Key 保存在本机钥匙串。")
+            Text("使用 DeepSeek API 时，聊天会发送最多 40 条近期对话（含本轮）、最多 30 条记忆、命中的资料片段、最多 40 条未完成个人待办、40 条未完成外部待办和 20 个本地项目。待办包含来源、状态、标题、负责人、截止日期及截止描述；会议纪要待办还会包含核对过的简短原文依据。每日计划会发送候选待办、最多 20 个本地项目进度和 20 条记忆；本期不会读取 Apple 日历。纪要提取会发送你粘贴或导入的全文；记忆提取仅发送本轮用户原话及最近 30 条已有记忆用于去重。API Key 保存在本机钥匙串。")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
             HStack {
                 Text("导出的资料库包含索引内容和源文件路径；API Key 不会导出。")

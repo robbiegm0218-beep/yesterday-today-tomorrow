@@ -23,6 +23,8 @@ enum AssistantTheme {
     static let text = adaptive("YuanText", light: 0x202124, dark: 0xECECEF)
     static let secondaryText = adaptive("YuanSecondary", light: 0x62646B, dark: 0xB0B0B8)
     static let border = adaptive("YuanBorder", light: 0xDEDEE4, dark: 0x45454A)
+    static let inspectorTop = adaptive("InspectorTop", light: 0xD2E2EE, dark: 0x293444)
+    static let inspectorBottom = adaptive("InspectorBottom", light: 0xF4E4D8, dark: 0x302A30)
     static let brand = Color(red: 0.36, green: 0.35, blue: 0.77)
 }
 

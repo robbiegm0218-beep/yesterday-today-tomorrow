@@ -55,7 +55,7 @@ struct DingTalkMinutesView: View {
                 }
             }
             HStack {
-                Text("点击“提取行动项”后，摘要才会发送给 DeepSeek。")
+                Text("点击“提取行动项”后，摘要会交给已配置的模型处理。")
                     .font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
                 Button("待办写入记录") { showingWriteHistory = true }.font(.system(size: 10))
