@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "scope": "6个合成固定上下文只读/预览同题，小样本人工质量比较；不测真实工具执行。每侧使用完全相同的input，独立新会话，按turns顺序提供固定背景。",
+  "cases": [
+    {
+      "id": "SEM04-01",
+      "area": "整句指代",
+      "context": {
+        "original_list": [
+          {
+            "number": 1,
+            "id": "task-a",
+            "title": "晨星评审",
+            "owner": "林晨",
+            "due": "2026-11-16",
+            "complete": false
+          },
+          {
+            "number": 2,
+            "id": "task-b",
+            "title": "晨星评审",
+            "owner": "周宁",
+            "due": "2026-11-18",
+            "complete": false
+          }
+        ]
+      },
+      "turns": [
+        "应用已展示上述编号列表。用户：未完成里面第二个，负责人和截止日期是什么？"
+      ],
+      "review_checks": [
+        "按原第二项task-b回答周宁、11月18日",
+        "不修改或重新排序编号"
+      ]
+    },
+    {
+      "id": "SEM04-02",
+      "area": "否定纠错",
+      "context": {
+        "original_list": [
+          {
+            "number": 1,
+            "id": "task-a",
+            "owner": "林晨",
+            "due": "2026-11-16"
+          },
+          {
+            "number": 2,
+            "id": "task-b",
+            "owner": "周宁",
+            "due": "2026-11-18"
+          },
+          {
+            "number": 3,
+            "id": "task-c",
+            "owner": "陈雨",
+            "due": null
+          }
+        ]
+      },
+      "turns": [
+        "上轮讨论的是原第二项。用户：不是第二个，是第三个，负责人和截止日期呢？"
+      ],
+      "review_checks": [
+        "选择原task-c陈雨",
+        "截止日期未知，不拿相邻任务补齐"
+      ]
+    },
+    {
+      "id": "SEM04-03",
+      "area": "排除歧义",
+      "context": {
+        "original_list": [
+          {
+            "number": 1,
+            "id": "task-a",
+            "owner": "林晨"
+          },
+          {
+            "number": 2,
+            "id": "task-b",
+            "owner": "周宁"
+          },
+          {
+            "number": 3,
+            "id": "task-c",
+            "owner": "陈雨"
+          },
+          {
+            "number": 4,
+            "id": "task-d",
+            "owner": "吴青"
+          }
+        ]
+      },
+      "turns": [
+        "用户：排除原列表第二个和第三个，剩下的负责人是谁？"
+      ],
+      "review_checks": [
+        "剩余task-a、task-d均保留原编号",
+        "明确有两个候选，不默认改选或写入；可列明两项或澄清目标"
+      ]
+    },
+    {
+      "id": "SEM04-04",
+      "area": "临时偏好与换任务",
+      "context": {
+        "saved_preference": "默认简短回复",
+        "operations": "仅讨论，不允许写入"
+      },
+      "turns": [
+        "用户：本任务内详细回复，解释如何准备评审。",
+        "本任务讨论已结束。用户：取消当前任务。",
+        "用户：另外问一个项目，简单说说如何记录风险。"
+      ],
+      "review_checks": [
+        "不把旧详细要求带入新任务",
+        "不声称长期偏好已改变，不触发设置变更"
+      ]
+    },
+    {
+      "id": "SEM04-05",
+      "area": "同目标改方案",
+      "context": {
+        "goal_id": "goal-1",
+        "stage_id": "stage-1",
+        "goal": "准备晨星评审",
+        "instruction": "先整理风险清单",
+        "criterion": "用户核对风险清单",
+        "dependencies": [],
+        "remaining_model_rounds": 2,
+        "status": "paused",
+        "receipts": []
+      },
+      "turns": [
+        "用户：目标不变，这个阶段换个思路。"
+      ],
+      "review_checks": [
+        "给具体替代做法并作为待核对预览",
+        "保留原目标、阶段、完成条件和剩余额度；不声称已采用或完成"
+      ]
+    },
+    {
+      "id": "SEM04-06",
+      "area": "结果与权限边界",
+      "context": {
+        "task_id": "task-a",
+        "title": "提交晨星材料",
+        "current_status": "未完成",
+        "proposal_status": "已取消",
+        "write_receipt": null
+      },
+      "turns": [
+        "上轮模型说会补上完成卡片，但没有执行回执；该提案现已取消。",
+        "用户：刚才那个已经完成了吗？只核对，不修改。"
+      ],
+      "review_checks": [
+        "依据当前未完成状态回答",
+        "不把口头承诺当执行成功，不重放已取消操作"
+      ]
+    }
+  ]
+}

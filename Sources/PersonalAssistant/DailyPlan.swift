@@ -116,7 +116,13 @@ struct DailyPlan {
     var priorityTasks: [PlannedTask] { Array(rankedTasks.prefix(3)) }
     var otherTasks: [PlannedTask] { Array(rankedTasks.dropFirst(3)) + deferredTasks }
 
-    func applying(_ ranking: DeepSeekPlanRanking) -> DailyPlan {
+    func summaryPreservingCoverage(_ generated: String) -> String {
+        guard !otherTasks.isEmpty else { return generated }
+        return "已列出\(priorityTasks.count)项今日优先事项；另有\(otherTasks.count)项未完成事项可在“其他待办”查看。"
+    }
+
+    func applying(_ ranking: DeepSeekPlanRanking, now: Date? = nil) -> DailyPlan {
+        let evaluatedAt = now ?? generatedAt
         let byID = Dictionary(uniqueKeysWithValues: rankedTasks.map { ($0.id, $0) })
         var seen = Set<String>()
         var ordered = ranking.orderedTaskIDs.compactMap { id -> PlannedTask? in
@@ -126,10 +132,11 @@ struct DailyPlan {
         let includedIDs = Set(ordered.map(\.id))
         ordered.append(contentsOf: rankedTasks.filter { !includedIDs.contains($0.id) })
         ordered = ordered.map { task in
-            guard let reason = ranking.reasons[task.id], !reason.isEmpty else { return task }
+            let linkedEvent = task.record.relatedEventID.flatMap { id in events.first { $0.id == id } }
+            let reason = ScheduleAdvicePolicy.taskReason(fallback: deferredTasks.isEmpty ? (ranking.reasons[task.id].flatMap { $0.isEmpty ? nil : $0 } ?? task.reason) : task.reason, startsAt: linkedEvent?.startsAt, endsAt: linkedEvent?.endsAt, now: evaluatedAt) ?? task.reason
             return PlannedTask(record: task.record, dueLabel: task.dueLabel, reason: reason, isOverdue: task.isOverdue)
         }
-        let knownEventIDs = Set(events.map(\.id))
+        let knownEventIDs = Set(events.filter { $0.startsAt > evaluatedAt }.map(\.id))
         let preparations = (ranking.preparations ?? [:]).reduce(into: [String: String]()) { result, entry in
             let note = entry.value.trimmingCharacters(in: .whitespacesAndNewlines)
             guard knownEventIDs.contains(entry.key), !note.isEmpty else { return }
@@ -206,7 +213,7 @@ struct DailyPlanComposer {
             } else if daysUntilDue == 0 {
                 reason = isRelatedToToday ? "今天到期，且与今天的\(linkedEvent?.title ?? "日程")相关" : "今天到期，优先留出处理时间"
             } else if isRelatedToToday {
-                reason = "与今天的\(linkedEvent?.title ?? "日程")相关，建议提前准备"
+                reason = ScheduleAdvicePolicy.taskReason(fallback: "与今天的\(linkedEvent?.title ?? "日程")相关，建议提前准备", startsAt: linkedEvent?.startsAt, endsAt: linkedEvent?.endsAt, now: now) ?? "关联今日日程"
             } else if dueDay == nil {
                 reason = "尚未设置截止日期，可结合今天的安排决定何时推进"
             } else {
@@ -232,5 +239,18 @@ struct DailyPlanComposer {
             sourceLabel: snapshot.sourceLabel,
             usesDemoData: snapshot.usesDemoData
         )
+    }
+}
+
+
+/// Time state only; never changes calendar records or linked todo completion.
+enum CalendarEventPhase: String {
+    case upcoming = "未开始"
+    case ongoing = "进行中"
+    case ended = "已结束"
+
+    static func at(_ now: Date, startsAt: Date, endsAt: Date) -> Self {
+        if now >= max(startsAt, endsAt) { return .ended }
+        return now >= startsAt ? .ongoing : .upcoming
     }
 }

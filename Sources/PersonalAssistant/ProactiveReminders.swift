@@ -74,8 +74,8 @@ enum ProactiveReminderScheduler {
         center.removePendingNotificationRequests(withIdentifiers: ReminderSchedulePolicy.slots.indices.map { identifierPrefix + String($0) })
         let calendar = Calendar.current
         let dayKey = Self.dayKey(for: now)
-        let previousSlots = UserDefaults.standard.string(forKey: "scheduledReminderDay") == dayKey
-            ? Set(UserDefaults.standard.array(forKey: "scheduledReminderSlots") as? [Int] ?? [])
+        let previousSlots = AssistantRuntime.preferences.string(forKey: "scheduledReminderDay") == dayKey
+            ? Set(AssistantRuntime.preferences.array(forKey: "scheduledReminderSlots") as? [Int] ?? [])
             : Set<Int>()
         let consumedSlots = Set(previousSlots.filter { index in
             guard ReminderSchedulePolicy.slots.indices.contains(index),
@@ -115,8 +115,8 @@ enum ProactiveReminderScheduler {
     }
 
     private static func saveScheduledSlots(_ indices: Set<Int>, dayKey: String) {
-        UserDefaults.standard.set(dayKey, forKey: "scheduledReminderDay")
-        UserDefaults.standard.set(Array(indices), forKey: "scheduledReminderSlots")
+        AssistantRuntime.preferences.set(dayKey, forKey: "scheduledReminderDay")
+        AssistantRuntime.preferences.set(Array(indices), forKey: "scheduledReminderSlots")
     }
 
     private static func dayKey(for date: Date) -> String {

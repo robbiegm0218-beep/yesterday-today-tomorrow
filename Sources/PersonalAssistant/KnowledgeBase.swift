@@ -30,6 +30,7 @@ struct LocalKnowledgeBase: Identifiable, Codable, Equatable {
     var folderBookmark: Data? = nil
     var documents: [KnowledgeDocument] = []
     var lastIndexedAt: Date?
+    var isSingleFile: Bool? = nil
 }
 
 enum LocalKnowledgeStore {
@@ -39,6 +40,10 @@ enum LocalKnowledgeStore {
 
     static func load() -> [LocalKnowledgeBase] {
         LocalJSONFileStore.load(from: fileURL, as: [LocalKnowledgeBase].self) ?? []
+    }
+
+    static func saveChecked(_ bases: [LocalKnowledgeBase]) throws {
+        try LocalJSONFileStore.save(bases, to: fileURL)
     }
 
     static func save(_ bases: [LocalKnowledgeBase]) {
@@ -61,11 +66,11 @@ enum LocalDocumentIndexer {
         var errorDescription: String? {
             switch self {
             case .authorizationExpired:
-                return "文件夹访问授权已失效，请重新连接源文件夹。原有索引快照仍可搜索。"
+                return "源资料访问授权已失效，请重新连接源资料。原有索引快照仍可搜索。"
             case .folderUnavailable(let path):
-                return "找不到资料库文件夹：\(path)。请重新连接源文件夹。原有索引快照仍可搜索。"
+                return "找不到资料来源：\(path)。请重新连接源资料。原有索引快照仍可搜索。"
             case .folderUnreadable(let path):
-                return "无法读取资料库文件夹：\(path)。请检查访问权限，或重新连接源文件夹。原有索引快照仍可搜索。"
+                return "无法读取资料来源：\(path)。请检查访问权限，或重新连接源文件夹。原有索引快照仍可搜索。"
             }
         }
     }
@@ -82,7 +87,7 @@ enum LocalDocumentIndexer {
         try indexWithReport(folderPath: folderPath, bookmark: bookmark, existing: existing).documents
     }
 
-    static func indexWithReport(folderPath: String, bookmark: Data? = nil, existing: [KnowledgeDocument] = []) throws -> IndexReport {
+    static func indexWithReport(folderPath: String, bookmark: Data? = nil, existing: [KnowledgeDocument] = [], singleFile: Bool = false) throws -> IndexReport {
         var folder = URL(fileURLWithPath: folderPath, isDirectory: true)
         var resolvedStaleBookmark = false
         if let bookmark {
@@ -100,18 +105,29 @@ enum LocalDocumentIndexer {
             throw IndexingError.authorizationExpired
         }
         var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+        guard FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue != singleFile else {
             throw IndexingError.folderUnavailable(folder.path)
         }
         guard FileManager.default.isReadableFile(atPath: folder.path) else {
             throw IndexingError.folderUnreadable(folder.path)
         }
-        let urls = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
-        guard let urls else { throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: folder.path]) }
+        let urls: AnyIterator<URL>
+        if singleFile {
+            guard supportedExtensions.contains(folder.pathExtension.lowercased()) else {
+                throw CocoaError(.fileReadUnsupportedScheme)
+            }
+            var selected = [folder].makeIterator()
+            urls = AnyIterator { selected.next() }
+        } else {
+            guard let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) else {
+                throw CocoaError(.fileReadUnknown, userInfo: [NSFilePathErrorKey: folder.path])
+            }
+            urls = AnyIterator { enumerator.nextObject() as? URL }
+        }
         var documents: [KnowledgeDocument] = []
         var skippedFiles: [String] = []
         let oldByPath = Dictionary(uniqueKeysWithValues: existing.map { ($0.urlPath, $0) })
-        while let url = urls.nextObject() as? URL {
+        for url in urls {
             guard supportedExtensions.contains(url.pathExtension.lowercased()) else { continue }
             guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .contentModificationDateKey, .fileSizeKey]), values.isRegularFile == true else { continue }
             let modifiedAt = values.contentModificationDate

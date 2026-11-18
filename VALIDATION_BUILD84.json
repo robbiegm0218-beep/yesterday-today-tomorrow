@@ -1,0 +1,220 @@
+{
+  "build": "84",
+  "date": "2026-11-18",
+  "scope": "CTX-01 joint estimated input/output preflight using remaining original-run allowance; primary chat/read loops/reference continuation/stage alternative/repair",
+  "binarySha256": "4384804dadc6155d3605f30aba5661b0707d7f9847f90e31356858bebde67ef3",
+  "targetedTestsPassed": 73,
+  "targetedSuites": 9,
+  "newJointBudgetTests": 5,
+  "registeredCasesPassed": 8,
+  "simulatedModelRequests": 25,
+  "actualProcessRestarts": 2,
+  "externalModelRequests": 0,
+  "enterpriseAcceptanceRequests": 0,
+  "fullSuiteRerun": false,
+  "realModelSpeedupMeasured": false,
+  "physicalInputP95Measured": false,
+  "remaining": [
+    "estimator calibration",
+    "unknown usage and preflight checkpoint attribution across restart",
+    "richer module retention reasons and read-only selection",
+    "CTX-02/03 summary and automatic task switching",
+    "real IME/p95 and paged retry GUI",
+    "SEM conditional completion and manual comparison"
+  ],
+  "cases": [
+    {
+      "case_id": "INT-152",
+      "checks": {
+        "business_falls_back_full": true,
+        "business_preserves_source_title_and_id": true,
+        "contradictory_personal_request_keeps_full_context": true,
+        "explicit_general_mode_selected": true,
+        "general_keeps_current_request_and_receipts": true,
+        "general_omits_personal_data_and_tools": true,
+        "mixed_request_is_not_social": true,
+        "no_business_write_or_source_change": true,
+        "omitted_sources_not_claimed_as_citations": true,
+        "ordinary_request_keeps_retrieved_knowledge": true,
+        "recall_modules_are_separate": true,
+        "social_has_no_workbench_titles_or_ids": true,
+        "social_keeps_receipts_and_current_request": true,
+        "social_omits_three_optional_modules": true,
+        "social_payload_smaller_than_business_fixture": true,
+        "social_uses_compact_policy": true
+      },
+      "outcome": "pass",
+      "simulatedModelRequests": 6,
+      "processRestartCount": 0
+    },
+    {
+      "case_id": "INT-151",
+      "checks": {
+        "explicit_recovery_dispatches_once": true,
+        "history_remains_and_no_business_actions": true,
+        "normal_has_named_modules": true,
+        "normal_requests_have_joint_output_reservation": true,
+        "ordinary_followup_keeps_explicit_boundary": true,
+        "ordinary_history_excluded_only_by_explicit_request": true,
+        "oversized_block_has_no_dispatch": true,
+        "per_request_actual_usage_comparison": true,
+        "recovery_keeps_authority_modules": true,
+        "remaining_ledger_budget_blocks_without_network": true,
+        "resume_preserves_original_tokens_receipts_and_run": true,
+        "source_preserved_and_recovery_explained": true
+      },
+      "outcome": "pass",
+      "simulatedModelRequests": 3,
+      "processRestartCount": 0
+    },
+    {
+      "case_id": "INT-149",
+      "checks": {
+        "active_task_no_extraction": true,
+        "cancelled_late_response_never_overwrites_new_reply": true,
+        "cancelled_rule_never_resurrected": true,
+        "conflict_clarified_locally": true,
+        "context_sent": true,
+        "declaration_no_extraction": true,
+        "end_preserves_original_budget_receipts": true,
+        "ended_origin_expires_in_real_model_context": true,
+        "ended_race_origin_expired_in_new_context": true,
+        "explicit_resolution": true,
+        "explicit_scope_active": true,
+        "memory_file_unchanged": true,
+        "negative_continuation_expires": true,
+        "no_business_cards": true,
+        "opt_out_preserves_task_style_without_memory": true,
+        "origin_run_sent_in_context": true,
+        "race_never_extracts_cancelled_preference": true,
+        "race_no_business_cards": true,
+        "restart_continues_task": true,
+        "topic_shift_expires": true
+      },
+      "outcome": "pass",
+      "simulatedModelRequests": 11,
+      "processRestartCount": 1
+    },
+    {
+      "case_id": "INT-134",
+      "checks": {
+        "applied_preview_cannot_replay": true,
+        "confirmation_applies_only_instruction": true,
+        "confirmed_revision_retains_identity_budget_and_stays_paused": true,
+        "no_remote_refresh_or_memory_extraction": true,
+        "no_source_business_writes": true,
+        "preview_without_changing_plan_question_or_receipts": true,
+        "restart_reopens_bound_preview_without_model": true,
+        "same_child_budget_one_request_no_new_goal": true
+      },
+      "outcome": "pass",
+      "simulatedModelRequests": 1,
+      "processRestartCount": 1
+    },
+    {
+      "case_id": "INT-135",
+      "checks": {
+        "chat_ack_opens_preview_without_applying_or_calling_model": true,
+        "close_reopen_keeps_original_until_confirmation": true,
+        "dismiss_persists_without_modifying_original_stage": true,
+        "no_remote_refresh_or_memory_extraction": true,
+        "no_source_business_writes": true,
+        "restart_dismissed_preview_stays_dismissed": true
+      },
+      "outcome": "pass",
+      "simulatedModelRequests": 1,
+      "processRestartCount": 0
+    },
+    {
+      "case_id": "INT-136",
+      "checks": {
+        "model_preview_cannot_change_completion_criterion": true,
+        "no_remote_refresh_or_memory_extraction": true,
+        "no_source_business_writes": true,
+        "scope_change_refuses_preview": true,
+        "unknown_receipt_blocks_model_and_preserves_result": true
+      },
+      "outcome": "pass",
+      "simulatedModelRequests": 1,
+      "processRestartCount": 0
+    },
+    {
+      "case_id": "INT-137",
+      "checks": {
+        "cancel_discards_late_preview_and_retains_original_question": true,
+        "no_remote_refresh_or_memory_extraction": true,
+        "no_source_business_writes": true,
+        "original_budget_exhaustion_has_no_extra_request": true
+      },
+      "outcome": "pass",
+      "simulatedModelRequests": 1,
+      "processRestartCount": 0
+    },
+    {
+      "case_id": "INT-150",
+      "checks": {
+        "cancel_preserves_unsent_draft": true,
+        "composer_225_updates": true,
+        "composer_500_updates": true,
+        "draft_225_keeps_complete_text": true,
+        "draft_500_keeps_complete_text": true,
+        "initial_225_message_construction_bounded": true,
+        "initial_500_message_construction_bounded": true,
+        "no_business_actions": true,
+        "old_0_construction_bounded": true,
+        "old_0_resize_keeps_draft": true,
+        "old_0_resize_keeps_message_ids": true,
+        "old_250_construction_bounded": true,
+        "old_250_resize_keeps_draft": true,
+        "old_250_resize_keeps_message_ids": true,
+        "rich_cache_225_bounded_and_reused": true,
+        "rich_cache_500_bounded_and_reused": true,
+        "send_consumes_draft_once": true,
+        "typing_225_does_not_publish_global_model": true,
+        "typing_500_does_not_publish_global_model": true
+      },
+      "outcome": "pass",
+      "simulatedModelRequests": 1,
+      "processRestartCount": 0
+    }
+  ],
+  "preservation": {
+    "strictSignaturePassed": true,
+    "sameSigningIdentity": true,
+    "dataSettingsUnchanged": {
+      "conversation.json": true,
+      "memories.json": true,
+      "projects.json": true,
+      "personal-todos.json": true,
+      "saved-day-plans.json": true,
+      "knowledge-bases.json": true,
+      "matter-context.json": true,
+      "skill-runs.json": true,
+      "background-daily-plan-settings.json": true,
+      "proactive-reminder-settings.json": true,
+      "dingtalk-event-settings.json": true,
+      "hidden-external-todos.json": true,
+      "matter-followups.json": true,
+      "dingtalk-research.json": true,
+      "assistant-runs.json": true
+    },
+    "preferencesUnchanged": {
+      "assistantName": true,
+      "assistantPersonality": true,
+      "assistantTone": true,
+      "assistantAddress": true,
+      "assistantAvatar": true,
+      "assistantAvatarID": true,
+      "relationshipPoints": true,
+      "assistantSkills": true,
+      "dingTalkSelectedProfiles": true,
+      "interfaceAppearance": true,
+      "autoMemoryEnabled": true
+    },
+    "dataAfterLaunchUnchanged": true,
+    "onlyFormalForegroundRunning": true,
+    "listenerStatus": "ready",
+    "listenerFreshAtCheck": true
+  },
+  "scopeNote": "Portable summary of prior build84 local validation; not rerun by Git synchronization. Machine paths, process identifiers and local raw reports omitted."
+}

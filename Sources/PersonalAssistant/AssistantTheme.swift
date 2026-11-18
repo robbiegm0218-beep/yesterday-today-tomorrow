@@ -17,6 +17,7 @@ enum AssistantTheme {
     static let sidebar = adaptive("YuanSidebar", light: 0xF7F7F8, dark: 0x181818)
     static let surface = adaptive("YuanSurface", light: 0xFFFFFF, dark: 0x2C2C2C)
     static let userMessage = adaptive("YuanUserMessage", light: 0xF0F0F2, dark: 0x303030)
+    static let assistantMessage = adaptive("YuanAssistantMessage", light: 0xF3F5F8, dark: 0x292B30)
     static let selection = adaptive("YuanSelection", light: 0xE8E8EC, dark: 0x303034)
     static let inset = adaptive("YuanInset", light: 0xF5F5F7, dark: 0x27272B)
     static let accent = adaptive("YuanAccent", light: 0x5355C5, dark: 0xADAFFF)

@@ -4,9 +4,16 @@ struct ExternalTodoActions: View {
     @EnvironmentObject private var model: AssistantModel
     let task: TaskItem
     let vertical: Bool
+    @State private var showingCompletion = false
+    @State private var showingEditor = false
 
     private var buttons: some View {
         Group {
+            Button("编辑/改期") { showingEditor = true }.disabled(model.externalTodoCompletionBusy || model.usesDemoData)
+            Button("完成") { showingCompletion = true }
+                .foregroundStyle(AssistantTheme.accent)
+                .disabled(model.externalTodoCompletionBusy || model.usesDemoData)
+                .accessibilityLabel("完成钉钉待办：\(task.title)")
             Button("去钉钉处理") { model.openDingTalkTodo(task) }
                 .foregroundStyle(AssistantTheme.accent)
                 .help(task.sourceURL == nil ? "复制标题并打开钉钉，在待办中搜索处理" : "打开钉钉原事项，处理后刷新工作台")
@@ -18,8 +25,11 @@ struct ExternalTodoActions: View {
     }
 
     var body: some View {
-        if vertical { VStack(spacing: 10) { buttons } }
-        else { HStack(spacing: 10) { buttons } }
+        Group {
+            if vertical { VStack(spacing: 10) { buttons } }
+            else { HStack(spacing: 10) { buttons } }
+        }.sheet(isPresented: $showingCompletion) { DingTalkTodoMutationSheet(localID: task.id, title: task.title, mode: .complete).environmentObject(model) }
+            .sheet(isPresented: $showingEditor) { DingTalkTodoMutationSheet(localID: task.id, title: task.title, mode: .update).environmentObject(model) }
     }
 }
 

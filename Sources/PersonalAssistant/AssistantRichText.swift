@@ -5,7 +5,7 @@ import SwiftUI
 struct AssistantRichText: View {
     let text: String
 
-    private enum Block {
+    enum Block: Equatable {
         case paragraph(String)
         case heading(String, Int)
         case item(String, String, Int)
@@ -14,8 +14,17 @@ struct AssistantRichText: View {
         case divider
     }
 
-    private func inline(_ value: String) -> AttributedString {
-        (try? AttributedString(markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(value)
+    private static let blockCache = BoundedTextCache<[Block]>(maxEntries: 256, maxSourceBytes: 1_048_576, maxEntryBytes: 32_768)
+    private static let inlineCache = BoundedTextCache<AttributedString>(maxEntries: 512, maxSourceBytes: 1_048_576, maxEntryBytes: 16_384)
+    static func inline(_ value: String) -> AttributedString {
+        inlineCache.value(for: value) {
+            (try? AttributedString(markdown: value, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(value)
+        }
+    }
+    static func blocks(_ text: String) -> [Block] { blockCache.value(for: text) { parseBlocks(text) } }
+    static var cacheStatistics: [String: Int] {
+        let block = blockCache.statistics, inline = inlineCache.statistics
+        return ["blockEntries": block.entries, "blockSourceBytes": block.sourceBytes, "blockHits": block.hits, "blockMisses": block.misses, "inlineEntries": inline.entries, "inlineSourceBytes": inline.sourceBytes, "inlineHits": inline.hits, "inlineMisses": inline.misses]
     }
 
     var body: some View {
@@ -34,23 +43,23 @@ struct AssistantRichText: View {
     @ViewBuilder private func blockView(_ block: Block) -> some View {
         switch block {
         case let .paragraph(value):
-            Text(inline(value)).font(.system(size: 15)).lineSpacing(6)
+            Text(Self.inline(value)).font(.system(size: 15)).lineSpacing(6)
                 .fixedSize(horizontal: false, vertical: true)
         case let .heading(value, level):
-            Text(inline(value)).font(.system(size: level == 1 ? 21 : (level == 2 ? 18 : 16), weight: .semibold))
+            Text(Self.inline(value)).font(.system(size: level == 1 ? 21 : (level == 2 ? 18 : 16), weight: .semibold))
                 .lineSpacing(4).fixedSize(horizontal: false, vertical: true)
         case let .item(value, marker, depth):
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 Text(marker).font(.system(size: 14)).foregroundStyle(AssistantTheme.secondaryText)
                     .frame(minWidth: 15, alignment: .trailing)
-                Text(inline(value)).font(.system(size: 15)).lineSpacing(5)
+                Text(Self.inline(value)).font(.system(size: 15)).lineSpacing(5)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }.padding(.leading, CGFloat(min(depth, 4)) * 16)
         case let .quote(value):
             HStack(alignment: .top, spacing: 12) {
                 RoundedRectangle(cornerRadius: 2).fill(AssistantTheme.border).frame(width: 3)
-                Text(inline(value)).font(.system(size: 14)).foregroundStyle(AssistantTheme.secondaryText)
+                Text(Self.inline(value)).font(.system(size: 14)).foregroundStyle(AssistantTheme.secondaryText)
                     .lineSpacing(5).fixedSize(horizontal: false, vertical: true)
             }.fixedSize(horizontal: false, vertical: true)
         case let .code(value, language):
@@ -77,7 +86,7 @@ struct AssistantRichText: View {
         }
     }
 
-    private static func blocks(_ text: String) -> [Block] {
+    static func parseBlocks(_ text: String) -> [Block] {
         var result: [Block] = []
         var paragraph: [String] = []
         var code: [String]? = nil

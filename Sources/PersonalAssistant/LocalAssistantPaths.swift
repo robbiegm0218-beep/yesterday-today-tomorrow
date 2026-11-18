@@ -4,6 +4,7 @@ enum LocalAssistantPaths {
     /// QA bundles use a disposable data root so manual acceptance never touches
     /// the production app's local profile or task data.
     static var dataDirectory: URL {
+        if let evaluation = AssistantRuntime.evaluationDirectory { return evaluation }
         let fileManager = FileManager.default
         if let bundleID = Bundle.main.bundleIdentifier, bundleID.contains(".qa") {
             let safeBundleID = bundleID.replacingOccurrences(of: "/", with: "-")

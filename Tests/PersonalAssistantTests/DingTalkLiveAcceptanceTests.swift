@@ -34,6 +34,16 @@ struct DingTalkLiveAcceptanceTests {
             #expect(second.taskID == first.taskID)
             let matching = try openTasks(client, profile: profile).filter { $0["subject"] as? String == title }
             #expect(matching.count == 1)
+            if ProcessInfo.processInfo.environment["YUAN_DINGTALK_LIVE_COMPLETION"] == "CONFIRMED_SAME_TEMPORARY_TASK" {
+                let taskID = try #require(first.taskID)
+                let completion = DingTalkTodoCompletionService(client: client)
+                let target = try completion.prepare(localID: "dingtalk-\(profile.id)-\(taskID)", expectedTitle: title, selectedIDs: [selected])
+                #expect(!target.isDone)
+                let completed = try completion.completeConfirmed(target, selectedIDs: [selected])
+                #expect(completed.isDone && completed.taskID == taskID)
+                // Reconciliation is read-only, including after a verified success.
+                #expect(try completion.verifyCompleted(target, selectedIDs: [selected]).isDone)
+            }
         } catch { submissionError = error }
 
         // Reconcile unknown results before cleanup; never replay creation.

@@ -6,7 +6,300 @@ import Security
 @Suite(.serialized)
 struct CoreWorkflowTests {
 
+@Test func meetingFollowupLinksWithoutOverwritingAndSurvivesRoundTrip() throws {
+    let action = ExtractedMeetingAction(title: "整理接口字段清单", owner: "小林", dueText: "下周五", sourceQuote: "小林下周五整理接口字段清单", confidence: "高")
+    let source = "会议A：小林下周五整理接口字段清单。"
+    let evidence = try MeetingActionEvidence.make(action: action, source: source, title: "会议A", url: nil)
+    var existing = PersonalTodo(title: "接口字段清单核对", dueAt: Date(), importance: .high, projectName: "产品项目")
+    existing.isComplete = true
+    let linked = try MeetingFollowupPolicy.saving(action: action, evidence: evidence, targetID: existing.id, projectName: nil, todos: [existing])
+    #expect(linked.count == 1)
+    var expected = existing
+    expected.meetingEvidence = [evidence]
+    #expect(linked[0] == expected)
+    #expect(try MeetingFollowupPolicy.saving(action: action, evidence: evidence, targetID: nil, projectName: "另一个项目", todos: linked) == linked)
+    #expect(try JSONDecoder().decode([PersonalTodo].self, from: JSONEncoder().encode(linked)) == linked)
+    let context = AssistantChatWorkbenchContext.message(personalTodos: linked, projects: [], externalSnapshot: nil, lastSync: nil, isSyncing: false, syncError: nil, now: Date()).content
+    #expect(context.contains("meetingFollowups"))
+    #expect(context.contains("已完成"))
+    #expect(context.contains(evidence.quote))
+    #expect(throws: ProjectUpdateError.self) {
+        _ = try MeetingFollowupPolicy.saving(action: action, evidence: evidence, targetID: UUID(), projectName: nil, todos: [])
+    }
+}
+
+@Test func meetingFollowupSeparatesSourcesAndFlagsSimilarTitles() throws {
+    let action = ExtractedMeetingAction(title: "整理接口字段清单", owner: "小林", dueText: "", sourceQuote: "小林整理接口字段清单", confidence: "高")
+    let first = try MeetingActionEvidence.make(action: action, source: "会议A：小林整理接口字段清单", title: "会议A", url: nil)
+    let second = try MeetingActionEvidence.make(action: action, source: "会议B：小林整理接口字段清单", title: "会议B", url: nil)
+    let a = try MeetingFollowupPolicy.saving(action: action, evidence: first, targetID: nil, projectName: "产品项目", todos: [])
+    #expect(a[0].dueAt == nil)
+    #expect(a[0].projectName == "产品项目")
+    #expect(MeetingFollowupPolicy.candidates(for: action, todos: a).count == 1)
+    let separate = try MeetingFollowupPolicy.saving(action: action, evidence: second, targetID: nil, projectName: nil, todos: a)
+    #expect(separate.count == 2)
+    let linked = try MeetingFollowupPolicy.saving(action: action, evidence: second, targetID: a[0].id, projectName: nil, todos: a)
+    #expect(linked.count == 1 && linked[0].meetingEvidence?.count == 2)
+    let urlA = URL(string: "https://example.com/meeting/1?tracking=a")!
+    let urlB = URL(string: "https://example.com/meeting/1?tracking=b#section")!
+    #expect(MeetingActionEvidence.sourceID(text: "a", url: urlA) == MeetingActionEvidence.sourceID(text: "b", url: urlB))
+    #expect(throws: ProjectUpdateError.self) {
+        _ = try MeetingActionEvidence.make(action: action, source: "原文没有这句话", title: "错误", url: nil)
+    }
+}
+
+@Test func meetingFollowupRecognizesLegacyEvidenceWithoutCreatingAnotherTodo() throws {
+    let action = ExtractedMeetingAction(title: "整理材料", owner: "小林", dueText: "周五", sourceQuote: "小林周五整理材料", confidence: "高")
+    let old = try #require(MeetingActionTodoFactory.makeTodo(from: action))
+    let evidence = try MeetingActionEvidence.make(action: action, source: action.sourceQuote, title: "旧纪要", url: nil)
+    #expect(throws: ProjectUpdateError.self) {
+        _ = try MeetingFollowupPolicy.saving(action: action, evidence: evidence, targetID: nil, projectName: nil, todos: [old])
+    }
+    let result = try MeetingFollowupPolicy.saving(action: action, evidence: evidence, targetID: old.id, projectName: nil, todos: [old])
+    #expect(result.count == 1 && result[0].id == old.id)
+    #expect(result[0].meetingEvidence == [evidence])
+}
+
+@Test func scheduleAdviceTransitionsWithoutCompletingTasks() throws {
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let end = start.addingTimeInterval(2_700)
+    let fallback = "记得按时参加评审，提前准备材料。"
+    let windows = [(startsAt: start, endsAt: end)]
+    #expect(ScheduleAdvicePolicy.summary(fallback: fallback, windows: windows, now: start.addingTimeInterval(-1)) == fallback)
+    #expect(ScheduleAdvicePolicy.summary(fallback: fallback, windows: windows, now: start).contains("正在进行"))
+    let endedSummary = ScheduleAdvicePolicy.summary(fallback: fallback, windows: windows, now: end)
+    #expect(endedSummary.contains("已结束"))
+    #expect(!endedSummary.contains("按时参加"))
+    #expect(!endedSummary.contains("提前准备"))
+    let next = (startsAt: end.addingTimeInterval(600), endsAt: end.addingTimeInterval(1_200))
+    #expect(ScheduleAdvicePolicy.summary(fallback: fallback, windows: windows + [next], now: end).contains("1项尚未开始"))
+    #expect(ScheduleAdvicePolicy.summary(fallback: fallback, windows: [], now: end) == fallback)
+    let event = CalendarEvent(id: "ended-review", title: "评审", startsAt: start, endsAt: end, detail: "产品评审", projectName: nil, sourceURL: nil)
+    let todo = TodoRecord(id: "review-material", title: "整理评审材料", dueAt: nil, importance: .normal, projectName: nil, relatedEventID: event.id, sourceURL: nil, isComplete: false)
+    let snapshot = DailyDataSnapshot(events: [event], todos: [todo], sourceLabel: "合成", usesDemoData: false)
+    let plan = DailyPlanComposer().compose(snapshot: snapshot, now: end)
+    let ranked = plan.applying(.init(orderedTaskIDs: [todo.id], reasons: [todo.id: "提前准备评审"], summary: fallback, preparations: [event.id: "会前准备材料"]))
+    let task = try #require((ranked.rankedTasks + ranked.deferredTasks).first)
+    #expect(task.reason.contains("已结束"))
+    #expect(!task.record.isComplete)
+    #expect(ranked.preparationNotes.isEmpty)
+    let context = AssistantChatWorkbenchContext.message(personalTodos: [], projects: [], externalSnapshot: snapshot, lastSync: end, isSyncing: false, syncError: nil, now: end).content
+    #expect(context.contains("\"phase\":\"已结束\""))
+}
+
+@Test func preparationExpiresAtStartEvenWhenRankingReturnsLate() {
+    let now = Date()
+    let start = now.addingTimeInterval(10)
+    let event = CalendarEvent(id: "soon", title: "评审", startsAt: start, endsAt: start.addingTimeInterval(600), detail: "", projectName: nil, sourceURL: nil)
+    let plan = DailyPlanComposer().compose(snapshot: .init(events: [event], todos: [], sourceLabel: "合成", usesDemoData: false), now: now)
+    let ranking = DeepSeekPlanRanking(orderedTaskIDs: [], reasons: [:], summary: "准备评审", preparations: [event.id: "准备资料"])
+    #expect(plan.applying(ranking).preparationNotes[event.id] != nil)
+    #expect(plan.applying(ranking, now: start).preparationNotes.isEmpty)
+}
+
+@Test func dingtalkErrorCategoriesDoNotExposeServerSecretsOrAssumeAuthentication() {
+    let api = DingTalkCLIError.classifying(exitCode: 1, stderr: Data(#"{"error":{"category":"api","message":"secret-token-value","token":"hidden"}}"#.utf8))
+    #expect(api.localizedDescription.contains("服务读取失败"))
+    #expect(!api.localizedDescription.contains("secret-token"))
+    let unknown = DingTalkCLIError.classifying(exitCode: 1, stderr: Data("unstructured secret-token-value".utf8))
+    #expect(!unknown.localizedDescription.contains("登录"))
+    #expect(!unknown.localizedDescription.contains("secret-token"))
+    let auth = DingTalkCLIError.classifying(exitCode: 1, stderr: Data(#"{"error":{"category":"auth"}}"#.utf8))
+    #expect(auth.localizedDescription.contains("认证检查失败"))
+}
+
+@Test func rankingSummaryDoesNotHideDeferredExternalTodos() {
+    let local = TodoRecord(id: "local", title: "个人事项", dueAt: nil, importance: .normal, projectName: nil, relatedEventID: nil, sourceURL: nil, isComplete: false, isPersonal: true)
+    let remote = TodoRecord(id: "remote", title: "工作事项", dueAt: nil, importance: .normal, projectName: nil, relatedEventID: nil, sourceURL: nil, isComplete: false)
+    let plan = DailyPlanComposer().compose(snapshot: .init(events: [], todos: [local, remote], sourceLabel: "合成", usesDemoData: false), now: Date())
+    let summary = plan.summaryPreservingCoverage("今天仅有1项待办")
+    #expect(summary.contains("1项今日优先"))
+    #expect(summary.contains("另有1项"))
+    #expect(!summary.contains("仅有"))
+}
+
+@Test func calendarEventTimeStateUsesSourceBoundaries() {
+    let start = Date(timeIntervalSince1970: 1_000)
+    let end = start.addingTimeInterval(2_700)
+    #expect(CalendarEventPhase.at(start.addingTimeInterval(-1), startsAt: start, endsAt: end) == .upcoming)
+    #expect(CalendarEventPhase.at(start, startsAt: start, endsAt: end) == .ongoing)
+    #expect(CalendarEventPhase.at(end.addingTimeInterval(-1), startsAt: start, endsAt: end) == .ongoing)
+    #expect(CalendarEventPhase.at(end, startsAt: start, endsAt: end) == .ended)
+    // Cross-midnight/all-day events stay active until the actual source end.
+    #expect(CalendarEventPhase.at(start.addingTimeInterval(86_399), startsAt: start, endsAt: start.addingTimeInterval(86_400)) == .ongoing)
+    #expect(CalendarEventPhase.at(start, startsAt: start, endsAt: start.addingTimeInterval(-1)) == .ended)
+}
+
+
+@Test func projectFollowupUpdatesPreserveIdentityAndRejectStaleOrDuplicateWrites() throws {
+    let old = AssistantProject(name: "CRM Alpha", dueAt: Date(), progressNote: "访谈完成")
+    var draft = old
+    draft.nextStep = "整理方案"
+    draft.blocker = "评审意见尚未返回"
+    draft.waitingFor = "小林"
+    draft.status = "等待回复"
+    let actionID = UUID()
+    let result = try ProjectUpdatePolicy.saving(draft, among: [old], expectedUpdatedAt: old.updatedAt, actionID: actionID, now: old.updatedAt.addingTimeInterval(1))
+    let updated = try #require(result.first)
+    #expect(updated.id == old.id)
+    #expect(updated.dueAt == old.dueAt)
+    #expect(updated.nextStep == "整理方案")
+    #expect(updated.progressUpdatedAt == updated.updatedAt)
+    #expect(try ProjectUpdatePolicy.saving(draft, among: result, expectedUpdatedAt: old.updatedAt, actionID: actionID) == result)
+    #expect(throws: ProjectUpdateError.self) { try ProjectUpdatePolicy.saving(draft, among: result, expectedUpdatedAt: old.updatedAt) }
+    #expect(throws: ProjectUpdateError.self) { try ProjectUpdatePolicy.saving(draft, among: [], expectedUpdatedAt: old.updatedAt) }
+    let duplicate = AssistantProject(name: "crm alpha", progressNote: "不应新增")
+    #expect(throws: ProjectUpdateError.self) { try ProjectUpdatePolicy.saving(duplicate, among: result, expectedUpdatedAt: nil) }
+    var renamed = updated
+    renamed.name = "CRM Beta"
+    let renamedResult = try ProjectUpdatePolicy.saving(renamed, among: result, expectedUpdatedAt: updated.updatedAt)
+    #expect(renamedResult[0].previousNames?.contains(old.name) == true)
+    let todo = TodoRecord(id: "source", title: "准备演示", dueAt: nil, importance: nil, projectName: old.name, sourceURL: nil, isComplete: false, isPersonal: true)
+    let snapshot = DailyDataSnapshot(events: [], todos: [todo], sourceLabel: "本机", usesDemoData: false)
+    let linked = DailyProjectAssociation.apply(to: snapshot, projects: renamedResult, now: Date())
+    #expect(linked.todos[0].projectName == "CRM Beta")
+    #expect(snapshot.todos[0].projectName == old.name)
+    #expect(renamedResult[0].progressUpdatedAt == updated.progressUpdatedAt)
+}
+
+@Test func projectProposalsRequireExplicitCreationAndLegacyRecordsStayReadable() throws {
+    let call = DeepSeekToolCall(id: "project", function: .init(name: "upsert_local_project", arguments: #"{"project_name":"演示项目","next_step":"整理方案","blocker":"等评审","waiting_for":"小林","status":"等待回复"}"#))
+    #expect(AssistantActionParser.proposals(from: [call], todos: [], projects: []).isEmpty)
+    let proposed = try #require(AssistantActionParser.proposals(from: [call], todos: [], projects: [], allowProjectCreation: true).first)
+    guard case let .saveProject(project, expected) = proposed.operation else { Issue.record("应为项目确认提案"); return }
+    #expect(expected == nil)
+    #expect(project.waitingFor == "小林")
+    let missing = DeepSeekToolCall(id: "missing", function: .init(name: "upsert_local_project", arguments: #"{"project_id":"00000000-0000-0000-0000-000000000001","project_name":"演示项目","next_step":"不能猜测目标"}"#))
+    #expect(AssistantActionParser.proposals(from: [missing], todos: [], projects: [project], allowProjectCreation: true).isEmpty)
+    #expect(AssistantToolIntent.requestsProjectCreation("请新建一个项目，名称是演示项目"))
+    #expect(!AssistantToolIntent.requestsProjectCreation("更新演示项目进度"))
+    let legacy = try JSONSerialization.data(withJSONObject: ["id": UUID().uuidString, "name": "旧项目", "progressNote": "进行中", "updatedAt": 0])
+    let decoded = try JSONDecoder().decode(AssistantProject.self, from: legacy)
+    #expect(decoded.nextStep == nil && decoded.status == nil)
+    #expect(try JSONDecoder().decode(AssistantProject.self, from: JSONEncoder().encode(project)) == project)
+}
+
+@Test func savedDayPlanRequiresReviewAndProtectsRevisionSourcesAndDay() throws {
+    let now = Date()
+    let ref = DayPlanReference(kind: "personal", id: UUID().uuidString, title: "准备演示")
+    let input = try JSONSerialization.data(withJSONObject: [["title": "准备演示", "sourceKind": "personal", "sourceID": ref.id.lowercased(), "durationMinutes": 45, "preparation": "核对示例", "reason": "今天到期"]])
+    let draft = try SavedDayPlanPolicy.proposal(json: String(decoding: input, as: UTF8.self), references: [ref], now: now)
+    #expect(draft.revision == 0)
+    #expect(draft.steps.first?.sourceID == ref.id)
+    var previous = draft
+    previous.steps[0].isDone = true
+    let regenerated = try SavedDayPlanPolicy.proposal(json: String(decoding: input, as: UTF8.self), references: [ref], now: now)
+    let preserved = SavedDayPlanPolicy.preservingProgress(in: regenerated, from: previous)
+    #expect(preserved.steps[0].id == previous.steps[0].id)
+    #expect(preserved.steps[0].isDone)
+    let action = UUID()
+    let saved = try SavedDayPlanPolicy.saving(draft, among: [], expectedRevision: 0, references: [ref], actionID: action, now: now)
+    #expect(saved.first?.revision == 1)
+    #expect(try SavedDayPlanPolicy.saving(draft, among: saved, expectedRevision: 0, references: [ref], actionID: action, now: now) == saved)
+    #expect(throws: DayPlanError.self) { try SavedDayPlanPolicy.saving(draft, among: saved, expectedRevision: 0, references: [ref], now: now) }
+    #expect(throws: DayPlanError.self) { try SavedDayPlanPolicy.validated(draft, references: [], now: now) }
+    let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: now)!
+    #expect(throws: DayPlanError.self) { try SavedDayPlanPolicy.validated(draft, references: [ref], now: tomorrow) }
+    var duplicate = draft
+    duplicate.steps.append(DayPlanStep(title: ref.title, sourceKind: "personal", sourceID: ref.id))
+    #expect(throws: DayPlanError.self) { try SavedDayPlanPolicy.validateShape(duplicate) }
+    #expect(!SavedDayPlanPolicy.validTime("24:00"))
+    #expect(!SavedDayPlanPolicy.validTime("9:30"))
+    #expect(SavedDayPlanPolicy.validTime("09:30"))
+}
+
+@Test func savedDayPlanUsesAuthoritativeEventTimesAndDoesNotMutateSources() throws {
+    let reference = DayPlanReference(kind: "event", id: "event", title: "方案评审", time: "17:00", duration: 60)
+    let json = #"[{"title":"错误标题","sourceKind":"event","sourceID":"event","plannedTime":"09:00","durationMinutes":30}]"#
+    let draft = try SavedDayPlanPolicy.proposal(json: json, references: [reference])
+    #expect(draft.steps.first?.title == reference.title)
+    #expect(draft.steps.first?.plannedTime == "17:00")
+    let changed = DayPlanReference(kind: "event", id: "event", title: "方案评审", time: "18:00", duration: 60)
+    #expect(throws: DayPlanError.self) { try SavedDayPlanPolicy.validated(draft, references: [changed]) }
+    let data = try JSONEncoder().encode(draft)
+    #expect(try JSONDecoder().decode(SavedDayPlan.self, from: data) == draft)
+    #expect(AssistantToolIntent.forcedToolName(for: "帮我安排今天", enabledSkillIDs: ["daily-planning"]) == "propose_day_plan")
+    #expect(AssistantToolIntent.forcedToolName(for: "只查看今天的计划", enabledSkillIDs: ["daily-planning"]) == nil)
+}
+
+@Test func memoryProvenanceRequiresOriginalUserEvidenceAndKeepsStableIdentity() throws {
+    let source = AssistantMessage(text: "我习惯先看概要，再看细节。", isUser: true)
+    let candidate = ExtractedMemory(content: "习惯先看概要再看细节", category: "个人偏好", sourceQuote: "我习惯先看概要，再看细节。")
+    let first = MemoryEvolution.apply([candidate], to: [], source: source)
+    let saved = try #require(first.memories.first)
+    #expect(first.added == 1)
+    #expect(saved.evidence?.first?.messageID == source.id)
+    #expect(saved.sourceType == "自动提取")
+    let secondSource = AssistantMessage(text: "平时请先概述，再展开细节。", isUser: true)
+    let duplicate = ExtractedMemory(content: "偏好先概述再展开", category: "个人偏好", sourceQuote: secondSource.text, matchesMemoryID: saved.id.uuidString)
+    let second = MemoryEvolution.apply([duplicate], to: first.memories, source: secondSource)
+    #expect(second.added == 0)
+    #expect(second.enriched == 1)
+    #expect(second.memories.count == 1)
+    #expect(second.memories.first?.id == saved.id)
+    #expect(second.memories.first?.content == saved.content)
+    #expect(second.memories.first?.evidence?.count == 2)
+    let replay = MemoryEvolution.apply([duplicate], to: second.memories, source: secondSource)
+    #expect(replay.memories == second.memories)
+    #expect(replay.enriched == 0)
+    let invalid = ExtractedMemory(content: "用户喜欢长报告", category: "个人偏好", sourceQuote: "我喜欢长报告")
+    #expect(MemoryEvolution.apply([invalid], to: [], source: source).added == 0)
+    #expect(MemoryEvolution.apply([candidate], to: [], source: AssistantMessage(text: source.text, isUser: false)).added == 0)
+    let optOut = AssistantMessage(text: "这条不要记住。我习惯先看概要，再看细节。", isUser: true)
+    #expect(MemoryEvolution.apply([candidate], to: [], source: optOut).added == 0)
+}
+
+@Test func conflictingMemoriesDoNotOverwriteManualFactsOrDeletedTargets() throws {
+    let old = AssistantMemory(content: "偏好详细解释", category: "个人偏好")
+    let source = AssistantMessage(text: "以后我更喜欢简短回答。", isUser: true)
+    let change = ExtractedMemory(content: "偏好简短回答", category: "个人偏好", sourceQuote: source.text, conflictsWithMemoryID: old.id.uuidString)
+    let result = MemoryEvolution.apply([change], to: [old], source: source)
+    #expect(result.memories.count == 2)
+    #expect(result.memories.last == old)
+    #expect(result.memories.first?.conflictsWithMemoryID == old.id)
+    #expect(result.memories.first?.contextDescription.contains("先向用户核对") == true)
+    var manual = old
+    manual.sourceType = "手动编辑"
+    let match = ExtractedMemory(content: "偏好详细说明", category: "个人偏好", sourceQuote: source.text, matchesMemoryID: old.id.uuidString)
+    #expect(MemoryEvolution.apply([match], to: [manual], source: source).memories == [manual])
+    #expect(MemoryEvolution.apply([match], to: [], source: source).added == 0)
+}
+
+@Test func memoryMetadataRoundTripsAndOlderRecordsRemainReadable() throws {
+    let id = UUID()
+    let oldData = try JSONSerialization.data(withJSONObject: ["id": id.uuidString, "content": "旧偏好", "category": "个人偏好", "createdAt": 0])
+    let old = try JSONDecoder().decode(AssistantMemory.self, from: oldData)
+    #expect(old.id == id)
+    #expect(old.evidence == nil)
+    #expect(old.updatedAt == nil)
+    var withMetadata = old
+    withMetadata.evidence = [MemoryEvidence(messageID: UUID(), quote: "原始说法", recordedAt: Date())]
+    withMetadata.revisions = [MemoryRevision(content: "编辑前", changedAt: Date())]
+    withMetadata.sourceType = "手动编辑"
+    #expect(try JSONDecoder().decode(AssistantMemory.self, from: JSONEncoder().encode(withMetadata)) == withMetadata)
+    #expect(MemoryExtractionPolicy.normalized("ＡＢＣ 偏好。") == MemoryExtractionPolicy.normalized("abc偏好"))
+    #expect(MemoryExtractionPolicy.normalized("版本3.5") != MemoryExtractionPolicy.normalized("版本35"))
+}
+
+@Test func localFactTimesAndSnapshotFreshnessStayExplicit() throws {
+    let date = try #require(ISO8601DateFormatter().date(from: "2026-10-27T09:00:00Z"))
+    let zone = try #require(TimeZone(identifier: "Asia/Shanghai"))
+    #expect(AssistantFactTime.timestamp(date, timeZone: zone) == "2026-10-27T17:00:00+08:00")
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = zone
+    #expect(AssistantFactTime.freshness(lastSync: nil, failed: false, syncing: false, now: date, calendar: calendar).contains("无法确认"))
+    #expect(AssistantFactTime.freshness(lastSync: date.addingTimeInterval(-86_400), failed: false, syncing: false, now: date, calendar: calendar).contains("跨日"))
+    #expect(AssistantFactTime.freshness(lastSync: date.addingTimeInterval(-901), failed: false, syncing: false, now: date, calendar: calendar).contains("超过15分钟"))
+    #expect(AssistantFactTime.freshness(lastSync: date, failed: true, syncing: false, now: date, calendar: calendar).contains("失败"))
+    #expect(AssistantFactTime.containsClockClaim("上午9:00的评审"))
+    #expect(AssistantFactTime.containsClockClaim("下午五点开会"))
+    #expect(!AssistantFactTime.containsClockClaim("今天到期，先准备评审资料"))
+}
+
 @Test func explicitTodoCreationForcesMatchingToolButNegationDoesNot() throws {
+    #expect(AssistantToolIntent.declinesWriteTools(in: "这条不要记住，请查询待办，不要创建或修改任何事项"))
+    #expect(!AssistantToolIntent.declinesWriteTools(in: "请创建待办，先给确认卡片，不要直接写入"))
+    #expect(!AssistantToolIntent.declinesWriteTools(in: "不要记住，请创建待办，标题为准备评审"))
     let enabledSkills: Set<String> = ["todo-priority"]
     #expect(AssistantToolIntent.forcedToolName(
         for: "请创建测试待办，标题为「准备评审材料」",
@@ -441,7 +734,9 @@ struct CoreWorkflowTests {
         exportedAt: Date(timeIntervalSince1970: 1_800_000_000),
         profile: .init(name: "予安", personality: "温柔陪伴型", tone: "温柔亲切", address: "你", avatar: "warm", relationshipPoints: 0, automaticMemoryEnabled: true),
         conversation: [], memories: [], projects: [], personalTodos: [], skills: [],
-        knowledgeBases: [.init(base)]
+        knowledgeBases: [.init(base)],
+        savedDayPlans: [.init(day: DailyPlanSchedulePolicy.dayKey(for: Date()), timeZone: TimeZone.current.identifier, steps: [.init(title: "独立安排", isDone: true)])],
+        backgroundPlanState: .init(result: .init(generatedAt: Date(), sourceLabel: "合成", plan: .init(day: DailyPlanSchedulePolicy.dayKey(for: Date()), timeZone: TimeZone.current.identifier, steps: [.init(title: "后台建议")])) )
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys]
@@ -476,14 +771,29 @@ struct CoreWorkflowTests {
         exportedAt: Date(),
         profile: .init(name: "小安", personality: "温柔陪伴型", tone: "温柔亲切", address: "你", avatar: "warm", relationshipPoints: 12, automaticMemoryEnabled: true),
         conversation: [.init(text: "今天先准备评审。", isUser: true)],
-        memories: [.init(content: "喜欢先看重点", category: "个人偏好")],
-        projects: [.init(name: "新产品", dueAt: nil, progressNote: "需求阶段")],
-        personalTodos: [.init(title: "准备评审", dueAt: nil, importance: .high, projectName: "新产品", owner: "小林", dueText: "下周五", sourceQuote: "下周五前完成评审材料")],
+        memories: [.init(content: "喜欢先看重点", category: "个人偏好", updatedAt: Date(), sourceType: "手动编辑", evidence: [.init(messageID: UUID(), quote: "先告诉我重点", recordedAt: Date())], revisions: [.init(content: "先看概要", changedAt: Date())])],
+        projects: [.init(name: "新产品", dueAt: nil, progressNote: "需求阶段", nextStep: "梳理方案", blocker: "缺少输入", waitingFor: "小林", status: "受阻", previousNames: ["旧产品"])],
+        personalTodos: [.init(title: "准备评审", dueAt: nil, importance: .high, projectName: "新产品", owner: "小林", dueText: "下周五", sourceQuote: "下周五前完成评审材料", meetingEvidence: [.init(id: String(repeating: "a", count: 64), sourceID: String(repeating: "b", count: 64), sourceTitle: "产品评审纪要", sourceURL: URL(string: "https://example.com/notes"), quote: "下周五前完成评审材料", owner: "小林", dueText: "下周五", recordedAt: Date())])],
         skills: AssistantSkill.defaults,
-        knowledgeBases: [.init(base)]
+        knowledgeBases: [.init(base)],
+        savedDayPlans: [.init(day: DailyPlanSchedulePolicy.dayKey(for: Date()), timeZone: TimeZone.current.identifier, steps: [.init(title: "独立安排", isDone: true)])],
+        backgroundPlanState: .init(result: .init(generatedAt: Date(), sourceLabel: "合成", plan: .init(day: DailyPlanSchedulePolicy.dayKey(for: Date()), timeZone: TimeZone.current.identifier, steps: [.init(title: "后台建议")])) )
     )
 
-    try LocalAssistantDataManager.restore(archive, defaults: defaults, appDataDirectory: root)
+    let decodedArchive = try LocalAssistantDataManager.decodeImport(JSONEncoder().encode(archive))
+    try LocalAssistantDataManager.restore(decodedArchive, defaults: defaults, appDataDirectory: root)
+    let restoredMemories = LocalJSONFileStore.load(from: root.appendingPathComponent("memories.json"), as: [AssistantMemory].self) ?? []
+    #expect(restoredMemories == archive.memories)
+    let restoredProjects = LocalJSONFileStore.load(from: root.appendingPathComponent("projects.json"), as: [AssistantProject].self) ?? []
+    #expect(restoredProjects == archive.projects)
+    let restoredPlans = LocalJSONFileStore.load(from: root.appendingPathComponent("saved-day-plans.json"), as: [SavedDayPlan].self) ?? []
+    #expect(restoredPlans == archive.savedDayPlans)
+    let restoredBackground = try BackgroundPlanStore(directory: root).state()
+    #expect(restoredBackground.result?.plan.steps.first?.title == "后台建议")
+    #expect(try !BackgroundPlanStore(directory: root).settings().enabled)
+    var oldArchive = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(archive)) as? [String: Any])
+    oldArchive.removeValue(forKey: "savedDayPlans")
+    #expect(try LocalAssistantDataManager.decodeImport(JSONSerialization.data(withJSONObject: oldArchive)).savedDayPlans == nil)
 
     #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("old.json").path))
     let restoredBases = LocalJSONFileStore.load(from: root.appendingPathComponent("knowledge-bases.json"), as: [LocalKnowledgeBase].self) ?? []
@@ -491,6 +801,7 @@ struct CoreWorkflowTests {
     #expect(restoredBases[0].folderBookmark == nil)
     #expect(restoredBases[0].documents.first?.content == "确认下周评审")
     let restoredTodos = LocalTodoStore.load(from: root.appendingPathComponent("personal-todos.json"))
+    #expect(restoredTodos == archive.personalTodos)
     #expect(restoredTodos.first?.owner == "小林")
     #expect(restoredTodos.first?.dueText == "下周五")
     #expect(restoredTodos.first?.sourceQuote == "下周五前完成评审材料")
@@ -961,14 +1272,23 @@ struct CoreWorkflowTests {
     }
     #expect(rejectedUnexpectedTool)
 
-    let event = CalendarEvent(id: "meeting-1", title: "方案评审", startsAt: Date(), endsAt: Date().addingTimeInterval(3_600), detail: "会前准备产品演示", projectName: "予安", sourceURL: nil)
+    MockDeepSeekURLProtocol.setResponse(Data(responseBody.utf8))
+    do {
+        _ = try await client.assistantTurn(to: [DeepSeekChatMessage(role: "user", content: "这条不要记住，只查询待办，不要创建或修改任何事项")], enabledSkillIDs: ["todo-priority"], apiKey: "test-key")
+        Issue.record("只读请求不应接受任何写入工具返回")
+    } catch DeepSeekRequestError.emptyResponse { }
+    let readOnlyRequest = try #require(MockDeepSeekURLProtocol.lastRequest()?.httpBody)
+    let readOnlyBody = try #require(JSONSerialization.jsonObject(with: readOnlyRequest) as? [String: Any])
+    #expect(readOnlyBody["tools"] == nil)
+
+    let event = CalendarEvent(id: "meeting-1", title: "方案评审", startsAt: Date().addingTimeInterval(3_600), endsAt: Date().addingTimeInterval(7_200), detail: "会前准备产品演示", projectName: "予安", sourceURL: nil)
     let task = TodoRecord(id: "task-1", title: "整理演示材料", dueAt: Date(), importance: .high, projectName: "予安", relatedEventID: "meeting-1", sourceURL: nil, isComplete: false)
     let plan = DailyPlanComposer().compose(snapshot: DailyDataSnapshot(events: [event], todos: [task], sourceLabel: "测试", usesDemoData: false), now: Date())
     let project = AssistantProject(name: "予安", dueAt: nil, progressNote: "访谈已完成，等待方案评审")
     let memory = AssistantMemory(content: "评审前先看一页摘要", category: "个人偏好")
     let rankingContent = try #require(String(data: JSONSerialization.data(withJSONObject: [
         "ordered_task_ids": ["task-1"],
-        "reasons": ["task-1": "与今天的评审相关"],
+        "reasons": ["task-1": "与今天上午9:00的评审相关"],
         "summary": "先准备方案评审",
         "preparations": ["meeting-1": "带上产品演示和一页摘要"]
     ]), encoding: .utf8))
@@ -976,15 +1296,235 @@ struct CoreWorkflowTests {
     MockDeepSeekURLProtocol.setResponse(rankingResponse)
     let ranking = try await client.rankDailyPlan(events: [event], candidates: plan.rankedTasks, projects: [project], memories: [memory], planDate: Date(), apiKey: "test-key")
     #expect(plan.applying(ranking).preparationNotes["meeting-1"] == "带上产品演示和一页摘要")
+    #expect(ranking.reasons["task-1"] == nil)
+    #expect(plan.applying(ranking).rankedTasks.first?.reason == plan.rankedTasks.first?.reason)
     let rankingRequest = try #require(MockDeepSeekURLProtocol.lastRequest())
     let rankingBodyData = try #require(rankingRequest.httpBody)
     let rankingBody = try #require(JSONSerialization.jsonObject(with: rankingBodyData) as? [String: Any])
     let requestMessages = try #require(rankingBody["messages"] as? [[String: Any]])
     let context = try #require(requestMessages.last?["content"] as? String)
     #expect(context.contains("等待方案评审"))
+    #expect(context.contains("timeZone"))
+    #expect(context.contains(AssistantFactTime.timestamp(event.startsAt)))
     #expect(context.contains("评审前先看一页摘要"))
     #expect(context.contains("会前准备产品演示"))
+    #expect(context.contains("未开始"))
     session.invalidateAndCancel()
+}
+
+
+@Test func assistantReplyRetainsUsageAndAcceptsMissingOrMalformedOptionalAccounting() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    let client = DeepSeekClient(session: session)
+    let valid = Data(#"{"model":"deepseek-flash","choices":[{"message":{"content":"已核对"}}],"usage":{"prompt_tokens":20,"completion_tokens":5,"total_tokens":25}}"#.utf8)
+    MockDeepSeekURLProtocol.setResponse(valid)
+    let result = try await client.assistantTurn(to: [.init(role: "user", content: "只读核对")], enabledSkillIDs: [], apiKey: "test-placeholder")
+    #expect(result.usage?.totalTokens == 25 && result.model == "deepseek-flash")
+    for raw in [#"{"choices":[{"message":{"content":"正常回复"}}]}"#, #"{"choices":[{"message":{"content":"正常回复"}}],"usage":{"prompt_tokens":"bad"}}"#] {
+        MockDeepSeekURLProtocol.setResponse(Data(raw.utf8))
+        let turn = try await client.assistantTurn(to: [.init(role: "user", content: "核对")], enabledSkillIDs: [], apiKey: "test-placeholder")
+        #expect(turn.text == "正常回复" && turn.usage == nil)
+    }
+}
+
+@Test func agentReadsThenAnswersWithProtocolAndAggregatedUsage() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    let read = #"{"choices":[{"message":{"tool_calls":[{"id":"read1","function":{"name":"search_memory","arguments":"{\"query\":\"测试\"}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}"#
+    let answer = #"{"choices":[{"message":{"content":"没有找到保存的相关记忆。"}}],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}"#
+    MockDeepSeekURLProtocol.setResponses([(Data(read.utf8), 200), (Data(answer.utf8), 200)])
+    let result = try await DeepSeekClient(session: session).assistantTurn(to: [.init(role: "user", content: "查测试记忆")], enabledSkillIDs: [], apiKey: "synthetic", readContext: .init())
+    #expect(result.readToolCallCount == 1 && result.modelRounds == 2 && result.usage?.totalTokens == 35)
+    #expect(result.toolCalls.isEmpty && result.stopReason == nil)
+    let request = try #require(MockDeepSeekURLProtocol.lastRequest()?.httpBody)
+    let body = try #require(JSONSerialization.jsonObject(with: request) as? [String: Any])
+    let messages = try #require(body["messages"] as? [[String: Any]])
+    let tool = try #require(messages.last)
+    #expect(tool["role"] as? String == "tool" && tool["tool_call_id"] as? String == "read1")
+    let replay = try #require(messages.dropLast().last?["tool_calls"] as? [[String: Any]])
+    #expect(replay.first?["type"] as? String == "function")
+}
+
+@Test func agentDefersMixedWritesAndStopsRepeatedReads() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    let mixed = #"{"choices":[{"message":{"tool_calls":[{"id":"read1","function":{"name":"find_matter","arguments":"{\"query\":\"\"}"}},{"id":"write1","function":{"name":"create_personal_todo","arguments":"{\"title\":\"测试\"}"}}]}}]}"#
+    let repeated = #"{"choices":[{"message":{"tool_calls":[{"id":"read2","function":{"name":"find_matter","arguments":"{\"query\":\"\"}"}}]}}]}"#
+    MockDeepSeekURLProtocol.setResponses([(Data(mixed.utf8), 200), (Data(repeated.utf8), 200)])
+    let result = try await DeepSeekClient(session: session).assistantTurn(to: [.init(role: "user", content: "创建测试任务，先查现有事项")], enabledSkillIDs: ["todo-priority"], apiKey: "synthetic", readContext: .init())
+    #expect(result.stopReason == "repeated_read" && result.readToolCallCount == 1 && result.toolCalls.isEmpty)
+    #expect(result.usage == nil && MockDeepSeekURLProtocol.requestCount() == 2)
+    let request = try #require(MockDeepSeekURLProtocol.lastRequest()?.httpBody)
+    #expect(String(decoding: request, as: UTF8.self).contains("deferred_not_executed"))
+}
+
+@Test func agentEnforcesBudgetsAndUnavailableTools() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    let client = DeepSeekClient(session: session)
+    let read = Data(#"{"choices":[{"message":{"tool_calls":[{"id":"r1","function":{"name":"find_matter","arguments":"{\"query\":\"\"}"}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}"#.utf8)
+    for (budget, expected) in [(AssistantAgentBudget(maxModelRounds: 1), "round_budget"), (.init(maxReadCalls: 0), "read_budget"), (.init(maxSeconds: 0), "time_budget")] {
+        MockDeepSeekURLProtocol.setResponse(read)
+        let result = try await client.assistantTurn(to: [.init(role: "user", content: "查询")], enabledSkillIDs: [], apiKey: "synthetic", readContext: .init(), budget: budget)
+        #expect(result.stopReason == expected && result.toolCalls.isEmpty)
+        #expect(MockDeepSeekURLProtocol.requestCount() <= 1)
+    }
+    MockDeepSeekURLProtocol.setResponse(read)
+    await #expect(throws: AssistantInputBudgetError.self) {
+        _ = try await client.assistantTurn(to:[.init(role:"user",content:"查询")],enabledSkillIDs:[],apiKey:"synthetic",readContext:.init(),budget:.init(maxTotalTokens:12))
+    }
+    #expect(MockDeepSeekURLProtocol.requestCount()==0)
+    MockDeepSeekURLProtocol.setResponse(Data(#"{"choices":[{"message":{"tool_calls":[{"id":"w1","function":{"name":"create_personal_todo","arguments":"{}"}}]}}]}"#.utf8))
+    let denied = try await client.assistantTurn(to: [.init(role: "user", content: "只查询")], enabledSkillIDs: [], apiKey: "synthetic", readContext: .init())
+    #expect(denied.stopReason == "unavailable_tool" && denied.toolCalls.isEmpty)
+    MockDeepSeekURLProtocol.setFailure(.cancelled)
+    do {
+        _ = try await client.assistantTurn(to: [.init(role: "user", content: "查询")], enabledSkillIDs: [], apiKey: "synthetic", readContext: .init())
+        Issue.record("Cancellation was swallowed")
+    } catch is CancellationError { }
+}
+
+@Test func agentReturnsWriteProposalOnlyAfterReading() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    let read = Data(#"{"choices":[{"message":{"tool_calls":[{"id":"r1","function":{"name":"find_matter","arguments":"{\"query\":\"\"}"}}]}}]}"#.utf8)
+    let write = Data(#"{"choices":[{"message":{"tool_calls":[{"id":"w1","function":{"name":"create_personal_todo","arguments":"{\"title\":\"测试\"}"}}]}}]}"#.utf8)
+    MockDeepSeekURLProtocol.setResponses([(read, 200), (write, 200)])
+    let result = try await DeepSeekClient(session: session).assistantTurn(to: [.init(role: "user", content: "创建测试任务")], enabledSkillIDs: ["todo-priority"], apiKey: "synthetic", readContext: .init())
+    #expect(result.toolCalls.first?.id == "w1" && result.readToolCallCount == 1 && result.stopReason == nil)
+}
+
+@Test @MainActor func agentLiveReadSupersedesStaleSnapshotAndRemainsReadOnly() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    let id = "dingtalk-synthetic:user-task-a"
+    let stale = TodoRecord(id: id, title: "合成事项", dueAt: nil, importance: .normal, sourceURL: nil, isComplete: false)
+    let liveReader = AssistantLiveTodoReader(client: SyntheticLiveTodoBackend(), scope: { .init(selected: ["synthetic:user"], readableIDs: [id]) })
+    let context = AssistantReadContext(external: [stale], selected: ["synthetic:user"], liveReader: liveReader)
+    let arguments = String(decoding: try JSONSerialization.data(withJSONObject: ["target_id": id]), as: UTF8.self)
+    let tool = DeepSeekToolCall(id: "live1", function: .init(name: "read_dingtalk_todo_live", arguments: arguments))
+    let calls = try JSONSerialization.jsonObject(with: JSONEncoder().encode([tool]))
+    let read = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["tool_calls": calls]]]])
+    let answer = Data(#"{"choices":[{"message":{"content":"该事项刚刚回查为已完成，没有执行操作。"}}]}"#.utf8)
+    MockDeepSeekURLProtocol.setResponses([(read, 200), (answer, 200)])
+    let result = try await DeepSeekClient(session: session).assistantTurn(to: [.init(role: "user", content: "核对这个事项当前状态")], enabledSkillIDs: [], apiKey: "synthetic", readContext: context)
+    #expect(result.readToolCallCount == 1 && result.toolCalls.isEmpty && result.stopReason == nil)
+    let request = try #require(MockDeepSeekURLProtocol.lastRequest()?.httpBody)
+    let body = try #require(JSONSerialization.jsonObject(with: request) as? [String: Any])
+    let messages = try #require(body["messages"] as? [[String: Any]])
+    let returned = try #require(messages.last?["content"] as? String)
+    #expect(returned.contains("已完成") && returned.contains("live_verified") && returned.contains("checked_at"))
+    #expect(stale.isComplete == false) // A read does not mutate saved business state.
+}
+
+@Test @MainActor func failedLiveReadStopsBeforeModelCanReuseStaleStatusOrProposeWrites() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    let id = "dingtalk-synthetic:user-task"
+    let stale = TodoRecord(id: id, title: "旧事项", dueAt: nil, importance: .normal, sourceURL: nil, isComplete: true)
+    let backend = SyntheticLiveTodoRead(fail: true)
+    let reader = AssistantLiveTodoReader(client: backend, scope: { .init(selected: ["synthetic:user"], readableIDs: [id]) })
+    let context = AssistantReadContext(external: [stale], selected: ["synthetic:user"], liveReader: reader)
+    let arguments = String(decoding: try JSONSerialization.data(withJSONObject: ["target_id": id]), as: UTF8.self)
+    let tool = DeepSeekToolCall(id: "live", function: .init(name: "read_dingtalk_todo_live", arguments: arguments))
+    let calls = try JSONSerialization.jsonObject(with: JSONEncoder().encode([tool]))
+    MockDeepSeekURLProtocol.setResponse(try JSONSerialization.data(withJSONObject: ["choices": [["message": ["tool_calls": calls]]]]))
+    let result = try await DeepSeekClient(session: session).assistantTurn(to: [.init(role: "user", content: "实时核对")], enabledSkillIDs: [], apiKey: "synthetic", readContext: context)
+    #expect(result.stopReason == "remote_read_failed" && result.text?.contains("无法核对当前状态") == true)
+    #expect(result.toolCalls.isEmpty && result.modelRounds == 1 && MockDeepSeekURLProtocol.requestCount() == 1 && backend.calls == 1)
+}
+
+@Test func requestUsageObserverIncludesAuxiliaryCallsAndMissingAccounting() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    let box = ScenarioUsage()
+    let client = DeepSeekClient(session: session, usageObserver: { box.record($0) })
+    MockDeepSeekURLProtocol.setResponses([
+        (Data(#"{"choices":[{"message":{"content":"OK"}}],"usage":{"prompt_tokens":8,"completion_tokens":2,"total_tokens":10}}"#.utf8), 200),
+        (Data(#"{"choices":[{"message":{"content":"OK"}}]}"#.utf8), 200)])
+    _ = try await client.reply(to: [.init(role: "user", content: "合成调用一")], apiKey: "synthetic")
+    _ = try await client.reply(to: [.init(role: "user", content: "合成调用二")], apiKey: "synthetic")
+    #expect(box.count == 2 && box.tokens == 10 && !box.complete)
+    MockDeepSeekURLProtocol.setResponse(Data(), statusCode: 500)
+    do { _ = try await client.reply(to: [.init(role: "user", content: "合成失败")], apiKey: "synthetic") } catch { }
+    #expect(box.count == 3 && !box.complete)
+}
+@Test func normalRuntimeCannotActivateEvaluationWithoutDedicatedEntrypoint() {
+    #expect(!AssistantRuntime.isEvaluating && AssistantRuntime.evaluationDirectory == nil)
+    #expect(AssistantRuntime.preferences === UserDefaults.standard)
+    #expect(throws: (any Error).self) { _ = try AssistantRuntime.beginEvaluation() }
+    #expect(!AssistantRuntime.isEvaluating)
+}
+
+@Test func planParameterRepairExposesOnlySameToolAndPreservesUnexecutedReceipt() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    let rejected = DeepSeekAssistantTurn(text: nil, toolCalls: [.init(id: "bad-plan", function: .init(name: "propose_day_plan", arguments: "{\"steps_json\":\"invalid\"}"))])
+    MockDeepSeekURLProtocol.setResponse(Data(#"{"choices":[{"message":{"content":"需要核对时间，尚未生成提案"}}]}"#.utf8))
+    let result = try await DeepSeekClient(session: session).repairDayPlan(messages: [.init(role: "user", content: "安排今天")], rejected: rejected, apiKey: "synthetic", timeout: 2)
+    #expect(result.toolCalls.isEmpty)
+    let data = try #require(MockDeepSeekURLProtocol.lastRequest()?.httpBody)
+    let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let definitions = try #require(body["tools"] as? [[String: Any]])
+    #expect(definitions.count == 1 && (definitions.first?["function"] as? [String: Any])?["name"] as? String == "propose_day_plan")
+    let messages = try #require(body["messages"] as? [[String: Any]])
+    let receipt = messages.last(where: { $0["role"] as? String == "tool" })
+    #expect(receipt?["tool_call_id"] as? String == "bad-plan" && (receipt?["content"] as? String)?.contains("not_executed") == true)
+    #expect(MockDeepSeekURLProtocol.lastRequest()?.timeoutInterval == 2)
+}
+@Test func invalidOptionalAccountingCannotOverflowMultiRoundTotals() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    for count in [-1, Int.max] {
+        let payload: [String: Any] = ["choices": [["message": ["content": "正常回复"]]], "usage": ["prompt_tokens": count, "completion_tokens": 1, "total_tokens": count]]
+        MockDeepSeekURLProtocol.setResponse(try JSONSerialization.data(withJSONObject: payload))
+        let result = try await DeepSeekClient(session: session).assistantTurn(to: [.init(role: "user", content: "只读")], enabledSkillIDs: [], apiKey: "synthetic")
+        #expect(result.usage == nil && result.text == "正常回复")
+    }
+}
+
+@Test func explicitGroundedWriteCanRequestOneBoundedToolProposalAfterProse() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    let todo = PersonalTodo(title: "接口评审", importance: .normal)
+    let call = DeepSeekToolCall(id: "complete", function: .init(name: "complete_personal_todo", arguments: "{\"todo_id\":\"\(todo.id)\"}"))
+    let calls = try JSONSerialization.jsonObject(with: JSONEncoder().encode([call]))
+    let valid = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["tool_calls": calls]]]])
+    MockDeepSeekURLProtocol.setResponses([(Data(#"{"choices":[{"message":{"content":"我准备生成确认卡片。"}}]}"#.utf8),200),(valid,200)])
+    let result = try await DeepSeekClient(session: session).assistantTurn(to: [.init(role: "user", content: "将任务接口评审标记完成")], enabledSkillIDs: ["todo-priority"], apiKey: "synthetic", readContext: .init(todos: [todo]), requireProposalAfterReads: true)
+    #expect(result.proposalEnforced && result.modelRounds == 2 && result.toolCalls.count == 1)
+    let body = try #require(JSONSerialization.jsonObject(with: MockDeepSeekURLProtocol.lastRequest()!.httpBody!) as? [String: Any])
+    #expect((body["tool_choice"] as? [String: Any])?["type"] as? String == "function")
+    #expect(AssistantToolIntent.shouldEnforceProposal("只读看看任务", tool: "complete_personal_todo", groundedTargetCount: 1, external: false) == false)
+    #expect(AssistantToolIntent.shouldEnforceProposal("修改任务", tool: "update_personal_todo", groundedTargetCount: 1, external: false) == false)
+    #expect(AssistantToolIntent.shouldEnforceProposal("标记完成", tool: "complete_personal_todo", groundedTargetCount: 2, external: false) == false)
+}
+
+@Test func planToolsAdvertiseNativeArraysRatherThanNestedJSONStringFields() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    for saved in [false,true] {
+        MockDeepSeekURLProtocol.setResponse(Data(#"{"choices":[{"message":{"content":"OK"}}]}"#.utf8))
+        _ = try await DeepSeekClient(session: session).assistantTurn(to: [.init(role: "user", content: "安排今天")], enabledSkillIDs: ["daily-planning"], apiKey: "synthetic", hasSavedDayPlan: saved)
+        let body = try #require(JSONSerialization.jsonObject(with: MockDeepSeekURLProtocol.lastRequest()!.httpBody!) as? [String: Any])
+        let definitions = try #require(body["tools"] as? [[String: Any]])
+        let name = saved ? "adjust_day_plan" : "propose_day_plan"
+        let definition = try #require(definitions.compactMap { $0["function"] as? [String: Any] }.first { $0["name"] as? String == name })
+        let parameters = try #require(definition["parameters"] as? [String: Any])
+        let properties = try #require(parameters["properties"] as? [String: Any])
+        let key = saved ? "operations" : "steps"
+        let array = try #require(properties[key] as? [String: Any])
+        #expect(array["type"] as? String == "array")
+        #expect((array["items"] as? [String: Any])?["type"] as? String == "object")
+        #expect(properties[saved ? "operations_json" : "steps_json"] == nil)
+    }
+}
+@Test func nativePlanPayloadPreservesQuotedDataAndLegacyCompatibilityWithoutUnescaping() throws {
+    let title = "核对字段引文“原文”"
+    let steps: [[String: Any]] = [["title": title, "sourceKind": "note", "durationMinutes": 30, "preparation": "保留原话及反斜杠\\"]]
+    let encoded = try JSONSerialization.data(withJSONObject: steps)
+    let legacy = String(decoding: encoded, as: UTF8.self)
+    func proposals(_ object: [String: Any]) throws -> [PendingAssistantAction] {
+        let raw = try JSONSerialization.data(withJSONObject: object)
+        return AssistantActionParser.proposals(from: [.init(id: "plan", function: .init(name: "propose_day_plan", arguments: String(decoding: raw, as: UTF8.self)))], todos: [], projects: [])
+    }
+    for object: [String: Any] in [["steps": steps], ["steps_json": legacy]] {
+        let result = try proposals(object)
+        if case let .saveDayPlan(plan, _) = result.first?.operation { #expect(plan.steps.first?.title == title && plan.steps.first?.preparation.hasSuffix("\\") == true) }
+        else { Issue.record("Valid native/legacy plan rejected") }
+    }
+    #expect(try proposals(["steps": steps, "steps_json": legacy]).isEmpty)
+    #expect(try proposals(["steps": legacy]).isEmpty)
+    #expect(try proposals(["steps": [["title": "不支持的来源", "sourceKind": "project", "sourceID": UUID().uuidString]]]).isEmpty)
 }
 
 }
@@ -1090,4 +1630,26 @@ private final class MockDeepSeekURLProtocol: URLProtocol {
     }
 
     override func stopLoading() {}
+}
+
+private struct SyntheticLiveTodoBackend: AssistantLiveTodoReading {
+    func detail(taskID: String, profileID: String, timeout: TimeInterval) async throws -> DingTalkCLIResult {
+        .init(data: try JSONSerialization.data(withJSONObject: ["result": ["todoDetailModel": ["taskId": taskID, "subject": "合成事项", "isDone": true]]]), exitCode: 0)
+    }
+}
+
+@Test func reopenRepairCannotSwitchToolOrGuessTargetLocally() async throws {
+    let session = makeMockDeepSeekSession(); defer { session.invalidateAndCancel() }
+    let rejected = DeepSeekAssistantTurn(text: nil, toolCalls: [.init(id: "bad-id", function: .init(name: "reopen_personal_todo", arguments: "{}"))])
+    MockDeepSeekURLProtocol.setResponse(Data(#"{"choices":[{"message":{"tool_calls":[{"id":"escape","type":"function","function":{"name":"complete_personal_todo","arguments":"{}"}}]}}]}"#.utf8))
+    do {
+        _ = try await DeepSeekClient(session: session).repairDayPlan(messages: [.init(role: "user", content: "恢复刚才的个人待办")], rejected: rejected, apiKey: "synthetic", timeout: 2)
+        Issue.record("Repair must reject a different write tool")
+    } catch { }
+    let data = try #require(MockDeepSeekURLProtocol.lastRequest()?.httpBody)
+    let body = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let definitions = try #require(body["tools"] as? [[String: Any]])
+    #expect(definitions.count == 1 && (definitions.first?["function"] as? [String: Any])?["name"] as? String == "reopen_personal_todo")
+    let history = try #require(body["messages"] as? [[String: Any]])
+    #expect((history.last?["content"] as? String)?.contains("character-for-character") == true)
 }

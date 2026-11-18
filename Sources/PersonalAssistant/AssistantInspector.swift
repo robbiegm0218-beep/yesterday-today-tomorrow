@@ -26,6 +26,7 @@ struct AssistantHeaderButtonStyle: ButtonStyle {
 
 struct AssistantInspector: View {
     @EnvironmentObject private var model: AssistantModel
+    @AppStorage("assistantName") private var assistantName = "予安"
     @Binding var page: AssistantInspectorPage
     let onClose: () -> Void
 
@@ -39,6 +40,8 @@ struct AssistantInspector: View {
                             Text(item == .assistant ? assistantName : item.rawValue)
                                 .font(.system(size: 12, weight: page == item ? .medium : .regular))
                                 .lineLimit(1)
+                                .truncationMode(.tail)
+                                .frame(maxWidth: item == .assistant ? 66 : nil)
                                 .padding(.horizontal, 10).padding(.vertical, 8)
                                 .background(page == item ? AssistantTheme.selection : .clear, in: Capsule())
                         }.buttonStyle(.plain)
@@ -64,13 +67,14 @@ struct AssistantInspector: View {
         .background(LinearGradient(colors: [AssistantTheme.inspectorTop, AssistantTheme.inspectorBottom], startPoint: .top, endPoint: .bottom))
     }
 
-    private var assistantName: String { UserDefaults.standard.string(forKey: "assistantName") ?? "予安" }
 }
 
 private struct AssistantOverview: View {
     @EnvironmentObject private var model: AssistantModel
     @AppStorage("assistantName") private var assistantName = "予安"
     @AppStorage("interfaceAppearance") private var appearance = "system"
+    @State private var showingScheduledActivities = false
+    @State private var showingMessageSettings = false
 
     var body: some View {
         ScrollView {
@@ -104,6 +108,33 @@ private struct AssistantOverview: View {
                     .accessibilityValue("\(Int(model.relationshipProgress * 100))%")
                 }.padding(18).background(AssistantTheme.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 24))
                     .overlay(RoundedRectangle(cornerRadius: 24).stroke(AssistantTheme.border.opacity(0.4), lineWidth: 1))
+
+                Button { showingScheduledActivities = true } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "clock.arrow.circlepath").font(.system(size: 20))
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("定时任务").font(.system(size: 14, weight: .semibold))
+                            Text("每日计划 · 主动提醒").font(.system(size: 12)).foregroundStyle(AssistantTheme.secondaryText)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.system(size: 12))
+                    }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(AssistantTheme.surface.opacity(0.8), in: RoundedRectangle(cornerRadius: 18))
+                }.buttonStyle(.plain).accessibilityLabel("查看定时任务")
+
+                Button { model.showingConnectionInfo = true } label: {
+                    Label("钉钉接入与组织", systemImage: "link")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                        .background(AssistantTheme.surface.opacity(0.8), in: RoundedRectangle(cornerRadius: 18))
+                }.buttonStyle(.plain)
+
+                Button { showingMessageSettings = true } label: {
+                    Label("消息监听设置", systemImage: "antenna.radiowaves.left.and.right")
+                        .font(.system(size: 14, weight: .medium))
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                        .background(AssistantTheme.surface.opacity(0.8), in: RoundedRectangle(cornerRadius: 18))
+                }.buttonStyle(.plain)
 
                 VStack(alignment: .leading, spacing: 14) {
                     Text("最近记忆").font(.system(size: 14, weight: .semibold))
@@ -139,6 +170,7 @@ private struct AssistantOverview: View {
                 }.font(.system(size: 12)).padding(16)
                     .background(AssistantTheme.surface.opacity(0.65), in: RoundedRectangle(cornerRadius: 18))
             }.padding(.horizontal, 22).padding(.bottom, 24)
-        }
+        }.sheet(isPresented: $showingScheduledActivities) { ScheduledActivitiesView() }
+            .sheet(isPresented: $showingMessageSettings) { DingTalkEventView() }
     }
 }

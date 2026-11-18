@@ -5,7 +5,7 @@ struct DingTalkDailyDataSource: DailyDataSource {
     private let selectedProfileIDs: () -> Set<String>
 
     init(client: any DingTalkReading = DingTalkCLIClient(), selectedProfileIDs: @escaping () -> Set<String> = {
-        Set(UserDefaults.standard.stringArray(forKey: "dingTalkSelectedProfiles") ?? [])
+        Set(AssistantRuntime.preferences.stringArray(forKey: "dingTalkSelectedProfiles") ?? [])
     }) {
         self.client = client
         self.selectedProfileIDs = selectedProfileIDs

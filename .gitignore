@@ -12,3 +12,9 @@ Resources/Signing.local.json
 *.pfx
 *.mobileprovision
 *.key
+
+# Local evaluation outputs and Python caches
+__pycache__/
+*.py[cod]
+evaluations/
+Tests/PersonalAssistantTests/Fixtures/intelligence-build*-results.json
